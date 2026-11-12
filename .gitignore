@@ -1,0 +1,26 @@
+# Compiled binaries
+/agys
+*.exe
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+
+# Test and coverage artifacts
+*.test
+*.out
+coverage.*
+
+# Local environment files
+.env
+.env.*
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
