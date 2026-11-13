@@ -19,7 +19,6 @@ const (
 	maxMarkdownScanLines   = 30
 	maxTranscriptTitleRune = 72
 	maxStoredPromptRunes   = 2000
-	maxPlannerScanForDir   = 12
 )
 
 var preferredMarkdownFiles = []string{
@@ -109,6 +108,11 @@ func extractMarkdownHeading(path string) string {
 	return ""
 }
 
+type dirSignal struct {
+	path  string
+	isCwd bool
+}
+
 func extractTranscriptDetails(sessionDir string) transcriptDetails {
 	path := filepath.Join(sessionDir, ".system_generated", "logs", "transcript.jsonl")
 	f, err := os.Open(path)
@@ -118,8 +122,8 @@ func extractTranscriptDetails(sessionDir string) transcriptDetails {
 	defer f.Close()
 
 	var details transcriptDetails
-	var dirCandidate string
-	plannerChecked := 0
+	var lastAgentSignal dirSignal
+	var lastActiveDoc string
 	lineIdx := 0
 
 	reader := bufio.NewReader(f)
@@ -129,9 +133,9 @@ func extractTranscriptDetails(sessionDir string) transcriptDetails {
 		if trimmed != "" {
 			hasUser := strings.Contains(trimmed, `"USER_INPUT"`)
 			hasSys := lineIdx < 5 && strings.Contains(trimmed, `"SYSTEM_MESSAGE"`)
-			needPlanner := details.WorkDir == "" && plannerChecked < maxPlannerScanForDir && strings.Contains(trimmed, `"PLANNER_RESPONSE"`)
+			hasPlannerTools := strings.Contains(trimmed, `"PLANNER_RESPONSE"`) && strings.Contains(trimmed, `"tool_calls"`)
 
-			if hasUser || hasSys || needPlanner {
+			if hasUser || hasSys || hasPlannerTools {
 				var entry transcriptEntry
 				if json.Unmarshal([]byte(trimmed), &entry) == nil {
 					switch entry.Type {
@@ -146,23 +150,16 @@ func extractTranscriptDetails(sessionDir string) transcriptDetails {
 							}
 							details.LastPrompt = truncatedPrompt
 						}
-						if details.WorkDir == "" && dirCandidate == "" {
-							if p := extractActiveDocPath(entry.Content); p != "" {
-								dirCandidate = resolveProjectRoot(p)
-							}
+						if p := extractActiveDocPath(entry.Content); p != "" {
+							lastActiveDoc = p
 						}
 					case "SYSTEM_MESSAGE":
 						if details.SenderParentID == "" {
 							details.SenderParentID = parseSenderFromContent(entry.Content)
 						}
 					case "PLANNER_RESPONSE":
-						if len(entry.ToolCalls) > 0 {
-							plannerChecked++
-							if cwd, filePath := extractToolCallPaths(entry); cwd != "" {
-								details.WorkDir = cwd
-							} else if dirCandidate == "" && filePath != "" {
-								dirCandidate = resolveProjectRoot(filePath)
-							}
+						if sig, ok := extractLastToolCallDir(entry); ok {
+							lastAgentSignal = sig
 						}
 					}
 				}
@@ -178,8 +175,15 @@ func extractTranscriptDetails(sessionDir string) transcriptDetails {
 		}
 	}
 
-	if details.WorkDir == "" && dirCandidate != "" {
-		details.WorkDir = dirCandidate
+	// Defer project-root stat resolution until after reading the transcript so
+	// intermediate tool calls avoid repeated filesystem lookups.
+	switch {
+	case lastAgentSignal.path != "" && lastAgentSignal.isCwd:
+		details.WorkDir = lastAgentSignal.path
+	case lastAgentSignal.path != "":
+		details.WorkDir = resolveProjectRoot(lastAgentSignal.path)
+	case lastActiveDoc != "":
+		details.WorkDir = resolveProjectRoot(lastActiveDoc)
 	}
 	return details
 }
@@ -247,18 +251,24 @@ func extractActiveDocPath(content string) string {
 	return ""
 }
 
-func extractToolCallPaths(entry transcriptEntry) (cwd string, filePath string) {
+func extractLastToolCallDir(entry transcriptEntry) (dirSignal, bool) {
+	var latest dirSignal
+	found := false
 	for _, tc := range entry.ToolCalls {
 		if rawCwd := unquoteArg(argString(tc.Args["Cwd"])); isUsableWorkPath(rawCwd) {
-			return filepath.Clean(rawCwd), ""
+			latest = dirSignal{path: filepath.Clean(rawCwd), isCwd: true}
+			found = true
+			continue
 		}
 		for _, key := range []string{"Path", "AbsolutePath", "TargetFile", "DirectoryPath", "SearchPath"} {
-			if p := unquoteArg(argString(tc.Args[key])); isUsableWorkPath(p) && filePath == "" {
-				filePath = filepath.Clean(p)
+			if p := unquoteArg(argString(tc.Args[key])); isUsableWorkPath(p) {
+				latest = dirSignal{path: filepath.Clean(p)}
+				found = true
+				break
 			}
 		}
 	}
-	return "", filePath
+	return latest, found
 }
 
 func argString(v any) string {

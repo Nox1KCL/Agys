@@ -49,6 +49,7 @@ func TestFormatPreviewRespectsWidthAndSections(t *testing.T) {
 	out := FormatPreview(s, art, 60, now, theme)
 	for _, want := range []string{
 		"★ Pinned",
+		"Last visited:",
 		"First Prompt",
 		"Last Prompt",
 		"Knowledge Items",

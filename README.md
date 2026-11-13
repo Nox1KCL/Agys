@@ -7,7 +7,7 @@ A terminal TUI for browsing, searching, organizing, and resuming **Google Antigr
 - **Automatic CLI session discovery** from `~/.gemini/antigravity-cli/` (`brain/`, `knowledge/`, `annotations/`).
 - **Live search (`/`)** across session titles, working directories, first and last user prompts, Knowledge Items, and subsessions.
 - **Omarchy-aligned styling**: reads your active Omarchy palette (`~/.local/state/omarchy/current/theme/colors.toml` or `~/.config/omarchy/current/theme/colors.toml`) with live reload on focus, preserves transparent terminal backgrounds, and falls back to ANSI 16 terminal colors elsewhere.
-- **Right-hand preview pane**: displays metadata (pin/archive flags, relative timestamp, directory, UUID, subsessions), first and last user prompts, Knowledge Items, and artifacts (`task.md` with checklist progress, `implementation_plan.md`, `walkthrough.md`). Switches via `Tab` on narrow terminals (`< 96` columns).
+- **Right-hand preview pane**: displays metadata (pin/archive flags, relative timestamp, last visited directory, UUID, subsessions), first and last user prompts, Knowledge Items, and artifacts (`task.md` with checklist progress, `implementation_plan.md`, `walkthrough.md`). Switches via `Tab` on narrow terminals (`< 96` columns).
 - **Pin & archive workflow**:
   - `p` toggles pinning (`★`), keeping pinned sessions at the top of the list.
   - `a` archives or restores a session (archived sessions are hidden by default).

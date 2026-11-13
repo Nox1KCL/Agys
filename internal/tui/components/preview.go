@@ -50,11 +50,11 @@ func FormatPreview(s session.Session, art session.SessionArtifacts, width int, n
 		dateLine := fmt.Sprintf("%s (%s)", utils.RelativeTime(s.UpdatedAt, now), s.UpdatedAt.Local().Format("2006-01-02 15:04"))
 		out = appendLabeledField(&out, "Updated: ", dateLine, width, theme)
 	}
-	dir := "—"
+	lastVisited := "—"
 	if s.WorkDir != "" {
-		dir = utils.ShortenHome(s.WorkDir)
+		lastVisited = utils.ShortenHome(s.WorkDir)
 	}
-	out = appendLabeledField(&out, "Directory: ", dir, width, theme)
+	out = appendLabeledField(&out, "Last visited: ", lastVisited, width, theme)
 	out = appendLabeledField(&out, "UUID: ", s.ID, width, theme)
 
 	if len(s.SubSessions) > 0 {

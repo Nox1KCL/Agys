@@ -3,6 +3,8 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -345,5 +347,59 @@ func TestCollectHandlesTypedToolCallArgs(t *testing.T) {
 	}
 	if s.WorkDir != "/workspace/myproj" {
 		t.Fatalf("WorkDir = %q, want %q", s.WorkDir, "/workspace/myproj")
+	}
+}
+
+func TestCollectUsesLastVisitedDirectoryAcrossTranscript(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.FromRoot(root)
+
+	projectBRoot := filepath.Join(root, "projects", "beta")
+	projectBFile := filepath.Join(projectBRoot, "internal", "app.go")
+	if err := os.MkdirAll(filepath.Join(projectBRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir git: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(projectBFile), 0o755); err != nil {
+		t.Fatalf("mkdir projectB: %v", err)
+	}
+	if err := os.WriteFile(projectBFile, []byte("package internal\n"), 0o600); err != nil {
+		t.Fatalf("write app.go: %v", err)
+	}
+	if got := resolveProjectRoot(projectBFile); got != projectBRoot {
+		t.Fatalf("resolveProjectRoot(%q) = %q, want %q", projectBFile, got, projectBRoot)
+	}
+
+	id := "9a4c2d1e-7b8e-4c9a-9f12-34567890abcd"
+	logsDir := filepath.Join(cfg.BrainDir, id, ".system_generated", "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+
+	var b strings.Builder
+	b.WriteString(`{"step_index":0,"type":"USER_INPUT","created_at":"2026-11-12T10:00:00Z","content":"<USER_REQUEST>\nStart in alpha\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nActive Document: /workspace/alpha/main.go (GO)\n</ADDITIONAL_METADATA>"}` + "\n")
+	b.WriteString(`{"step_index":1,"type":"PLANNER_RESPONSE","created_at":"2026-11-12T10:00:01Z","tool_calls":[{"name":"run_command","args":{"Cwd":"/workspace/alpha"}}]}` + "\n")
+
+	// Simulate >12 intermediate planner turns without paths before visiting beta.
+	for i := 2; i < 16; i++ {
+		b.WriteString(`{"step_index":` + strconv.Itoa(i) + `,"type":"PLANNER_RESPONSE","created_at":"2026-11-12T10:01:00Z","tool_calls":[{"name":"run_command","args":{"CommandLine":"echo ok"}}]}` + "\n")
+	}
+
+	b.WriteString(`{"step_index":16,"type":"PLANNER_RESPONSE","created_at":"2026-11-12T10:02:00Z","tool_calls":[{"name":"read_file","args":{"Path":"/workspace/other/old.go"}},{"name":"read_file","args":{"Path":"/workspace/beta/internal/app.go"}},{"name":"read_file","args":{"Path":"/home/nox/.gemini/antigravity-cli/brain/` + id + `/task.md"}}]}` + "\n")
+
+	if err := os.WriteFile(filepath.Join(logsDir, "transcript.jsonl"), []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	sessions, err := Collect(cfg)
+	if err != nil {
+		t.Fatalf("Collect failed: %v", err)
+	}
+
+	s, ok := sessions[id]
+	if !ok {
+		t.Fatalf("missing session %s", id)
+	}
+	if s.WorkDir != "/workspace/beta/internal" {
+		t.Fatalf("WorkDir = %q, want last visited directory %q", s.WorkDir, "/workspace/beta/internal")
 	}
 }
