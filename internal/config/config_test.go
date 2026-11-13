@@ -38,4 +38,16 @@ func TestDefaultAndFromRoot(t *testing.T) {
 	if isolated.StateFile != filepath.Join(home, "sandbox", "agys_state.json") {
 		t.Fatalf("FromRoot StateFile = %q", isolated.StateFile)
 	}
+
+	overridden, err := DefaultWithOverrides("~/custom-antigravity", "~/custom-state.json")
+	if err != nil {
+		t.Fatalf("DefaultWithOverrides() failed: %v", err)
+	}
+	wantCustomRoot := filepath.Join(home, "custom-antigravity")
+	if overridden.AntigravityDir != wantCustomRoot || overridden.BrainDir != filepath.Join(wantCustomRoot, "brain") {
+		t.Fatalf("unexpected overridden data dirs: %+v", overridden)
+	}
+	if overridden.StateFile != filepath.Join(home, "custom-state.json") {
+		t.Fatalf("overridden StateFile = %q", overridden.StateFile)
+	}
 }

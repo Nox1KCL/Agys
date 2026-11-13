@@ -87,6 +87,37 @@ func TestUserStateOverridesAndOrdering(t *testing.T) {
 	if len(withArchived) != 3 {
 		t.Fatalf("got %d sessions with archived included, want 3", len(withArchived))
 	}
+
+	// Custom title overrides annotation title without altering annotations/.
+	st.SetTitle(idUnpinnedFromAnn, "  Renamed\nSession\tTitle ")
+	if err := SaveUserState(cfg.StateFile, st); err != nil {
+		t.Fatalf("SaveUserState with custom title failed: %v", err)
+	}
+
+	sessions, err = Collect(cfg)
+	if err != nil {
+		t.Fatalf("Collect after rename failed: %v", err)
+	}
+	renamed := sessions[idUnpinnedFromAnn]
+	if renamed.Title != "Renamed Session Title" || renamed.TitleSource != TitleSourceCustom {
+		t.Fatalf("unexpected renamed session: title=%q source=%q", renamed.Title, renamed.TitleSource)
+	}
+	if renamed.DefaultTitle != "Newer Unpinned" || renamed.DefaultTitleSource != TitleSourceAnnotation {
+		t.Fatalf("unexpected preserved default title: title=%q source=%q", renamed.DefaultTitle, renamed.DefaultTitleSource)
+	}
+
+	// Clearing custom title removes override cleanly and restores annotation title.
+	st.SetTitle(idUnpinnedFromAnn, "   ")
+	if err := SaveUserState(cfg.StateFile, st); err != nil {
+		t.Fatalf("SaveUserState clear title failed: %v", err)
+	}
+	sessions, err = Collect(cfg)
+	if err != nil {
+		t.Fatalf("Collect after clearing title failed: %v", err)
+	}
+	if sessions[idUnpinnedFromAnn].Title != "Newer Unpinned" || sessions[idUnpinnedFromAnn].TitleSource != TitleSourceAnnotation {
+		t.Fatalf("expected restored annotation title, got %+v", sessions[idUnpinnedFromAnn])
+	}
 }
 
 func TestLoadArtifactsCheckboxesAndTruncation(t *testing.T) {

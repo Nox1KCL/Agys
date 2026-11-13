@@ -14,6 +14,7 @@ type KeyMap struct {
 	ToggleSubs         key.Binding
 	Collapse           key.Binding
 	TogglePreviewFocus key.Binding
+	Rename             key.Binding
 	TogglePin          key.Binding
 	ToggleArchive      key.Binding
 	ToggleShowArchived key.Binding
@@ -65,6 +66,10 @@ func DefaultKeyMap() KeyMap {
 		TogglePreviewFocus: key.NewBinding(
 			key.WithKeys("tab"),
 			key.WithHelp("Tab", "focus preview"),
+		),
+		Rename: key.NewBinding(
+			key.WithKeys("r"),
+			key.WithHelp("r", "rename session"),
 		),
 		TogglePin: key.NewBinding(
 			key.WithKeys("p"),

@@ -43,6 +43,19 @@ type layoutSpec struct {
 	previewInnerW int
 }
 
+// Options configures optional startup behavior for the root TUI model.
+type Options struct {
+	ShowArchived bool
+	InitialQuery string
+	ExitOnResume bool
+}
+
+// ResumeTarget identifies a session scheduled to replace the TUI process on exit.
+type ResumeTarget struct {
+	ID      string
+	WorkDir string
+}
+
 // Model represents the root Bubble Tea application state.
 type Model struct {
 	cfg            config.Config
@@ -51,8 +64,13 @@ type Model struct {
 	themeSignature string
 	searchInput    textinput.Model
 	searching      bool
+	renameInput    textinput.Model
+	renaming       bool
+	renameTargetID string
 	previewFocused bool
 	showArchived   bool
+	exitOnResume   bool
+	pendingResume  *ResumeTarget
 	showHelp       bool
 	helpOffset     int
 	loading        bool
@@ -78,14 +96,29 @@ type Model struct {
 
 // New constructs the initial root TUI model.
 func New(cfg config.Config) Model {
+	return NewWithOptions(cfg, Options{})
+}
+
+// NewWithOptions constructs the root TUI model with explicit runtime options.
+func NewWithOptions(cfg config.Config, opts Options) Model {
 	ti := textinput.New()
 	ti.Prompt = "/ "
 	ti.Placeholder = "search by title, directory, or prompt..."
 	ti.CharLimit = 200
+	if opts.InitialQuery != "" {
+		ti.SetValue(opts.InitialQuery)
+	}
+
+	ri := textinput.New()
+	ri.Prompt = "Rename: "
+	ri.Placeholder = "session title (empty resets)"
+	ri.CharLimit = 160
 
 	theme, sig := styles.LoadTheme()
 	ti.PromptStyle = theme.SearchPrompt
 	ti.PlaceholderStyle = theme.HeaderHint
+	ri.PromptStyle = theme.SearchPrompt
+	ri.PlaceholderStyle = theme.HeaderHint
 
 	m := Model{
 		cfg:            cfg,
@@ -93,6 +126,9 @@ func New(cfg config.Config) Model {
 		theme:          theme,
 		themeSignature: sig,
 		searchInput:    ti,
+		renameInput:    ri,
+		showArchived:   opts.ShowArchived,
+		exitOnResume:   opts.ExitOnResume,
 		loading:        true,
 		expanded:       make(map[string]bool),
 		userState:      session.UserState{Sessions: make(map[string]session.StateOverride)},
@@ -100,9 +136,17 @@ func New(cfg config.Config) Model {
 		artifactCache:  make(map[string]session.SessionArtifacts),
 		now:            time.Now,
 	}
-	m.syncSearchInputWidth()
+	m.syncHeaderInputWidths()
 	m.syncPreviewViewport(true)
 	return m
+}
+
+// PendingResume returns the selected session target if the TUI quit to exec agy directly.
+func (m Model) PendingResume() (ResumeTarget, bool) {
+	if m.pendingResume == nil {
+		return ResumeTarget{}, false
+	}
+	return *m.pendingResume, true
 }
 
 // Init satisfies tea.Model.
@@ -117,7 +161,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		lay := m.layoutDimensions()
-		m.syncSearchInputWidth()
+		m.syncHeaderInputWidths()
 		m.ensureCursorVisible(m.listHeight(lay.innerH))
 		m.syncPreviewViewport(false)
 		m.clampHelpOffset()
@@ -160,6 +204,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadSessionsCmd(m.cfg)
 
 	case tea.KeyMsg:
+		if m.renaming {
+			return m.updateRename(msg)
+		}
 		if m.searching {
 			return m.updateSearch(msg)
 		}
@@ -172,6 +219,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateBrowse(msg)
 	}
 
+	if m.renaming {
+		var cmd tea.Cmd
+		m.renameInput, cmd = m.renameInput.Update(msg)
+		return m, cmd
+	}
+
 	if m.searching {
 		var cmd tea.Cmd
 		m.searchInput, cmd = m.searchInput.Update(msg)
@@ -179,6 +232,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) updateRename(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.renaming = false
+		m.renameTargetID = ""
+		m.renameInput.Blur()
+		m.renameInput.SetValue("")
+		return m, nil
+	case tea.KeyEnter:
+		m.commitRename()
+		m.renaming = false
+		m.renameTargetID = ""
+		m.renameInput.Blur()
+		m.renameInput.SetValue("")
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.renameInput, cmd = m.renameInput.Update(msg)
+	return m, cmd
 }
 
 func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -226,7 +303,7 @@ func (m Model) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Search):
 		m.searching = true
 		m.errMsg = ""
-		m.syncSearchInputWidth()
+		m.syncHeaderInputWidths()
 		cmd := m.searchInput.Focus()
 		return m, cmd
 	case key.Matches(msg, m.keys.Clear):
@@ -237,6 +314,8 @@ func (m Model) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.TogglePreviewFocus):
 		m.previewFocused = true
 		m.syncPreviewViewport(false)
+	case key.Matches(msg, m.keys.Rename):
+		return m.startRename()
 	case key.Matches(msg, m.keys.TogglePin):
 		m.togglePin()
 	case key.Matches(msg, m.keys.ToggleArchive):
@@ -281,9 +360,11 @@ func (m Model) updatePreviewFocus(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.previewFocused = false
 		m.searching = true
 		m.errMsg = ""
-		m.syncSearchInputWidth()
+		m.syncHeaderInputWidths()
 		cmd := m.searchInput.Focus()
 		return m, cmd
+	case key.Matches(msg, m.keys.Rename):
+		return m.startRename()
 	case key.Matches(msg, m.keys.TogglePin):
 		m.togglePin()
 	case key.Matches(msg, m.keys.ToggleArchive):
@@ -355,14 +436,90 @@ func (m Model) resumeSelected() (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
-	cmd, err := session.NewResumeCmd(selected.ID)
+	cmd, err := session.NewResumeCmdWithDir(selected.ID, selected.WorkDir)
 	if err != nil {
 		m.errMsg = err.Error()
 		return m, nil
 	}
+	if m.exitOnResume {
+		m.pendingResume = &ResumeTarget{
+			ID:      selected.ID,
+			WorkDir: selected.WorkDir,
+		}
+		return m, tea.Quit
+	}
 	return m, tea.ExecProcess(cmd, func(execErr error) tea.Msg {
 		return sessionResumedMsg{err: execErr}
 	})
+}
+
+func (m Model) startRename() (tea.Model, tea.Cmd) {
+	sel, ok := m.selectedSession()
+	if !ok {
+		return m, nil
+	}
+	m.renaming = true
+	m.searching = false
+	m.previewFocused = false
+	m.showHelp = false
+	m.errMsg = ""
+	m.renameTargetID = sel.ID
+
+	initial := sel.Title
+	if sel.TitleSource == session.TitleSourceNone {
+		initial = ""
+	}
+	m.renameInput.SetValue(initial)
+	m.renameInput.CursorEnd()
+	m.syncHeaderInputWidths()
+	return m, m.renameInput.Focus()
+}
+
+func (m *Model) commitRename() {
+	if m.renameTargetID == "" {
+		return
+	}
+	s, exists := m.sessions[m.renameTargetID]
+	if !exists {
+		return
+	}
+
+	clean := session.NormalizeTitle(m.renameInput.Value())
+	m.userState.SetTitle(m.renameTargetID, clean)
+	if err := session.SaveUserState(m.cfg.StateFile, m.userState); err != nil {
+		m.errMsg = err.Error()
+	} else {
+		m.errMsg = ""
+	}
+
+	if s.DefaultTitle == "" && s.TitleSource != session.TitleSourceCustom && s.Title != "" {
+		s.DefaultTitle = s.Title
+		s.DefaultTitleSource = s.TitleSource
+	}
+
+	if clean != "" {
+		s.Title = clean
+		s.TitleSource = session.TitleSourceCustom
+	} else {
+		session.RestoreDefaultTitle(&s)
+	}
+	m.sessions[m.renameTargetID] = s
+
+	// Keep parent SubSessions cache synchronized when renaming a child subsession.
+	if s.ParentID != "" {
+		if parent, hasParent := m.sessions[s.ParentID]; hasParent {
+			for i, sub := range parent.SubSessions {
+				if sub.ID == s.ID {
+					parent.SubSessions[i] = s
+					break
+				}
+			}
+			m.sessions[s.ParentID] = parent
+		}
+	}
+
+	m.refreshRows(true)
+	m.syncPreviewViewport(true)
 }
 
 func (m Model) selectedSession() (session.Session, bool) {
@@ -478,7 +635,7 @@ func (m *Model) refreshRows(preserveSelection bool) {
 	m.results = session.SearchWithOptions(m.sessions, m.searchInput.Value(), session.SearchOptions{
 		IncludeArchived: m.showArchived,
 	})
-	m.syncSearchInputWidth()
+	m.syncHeaderInputWidths()
 	m.rebuildRows(selectedID, fallbackCursor)
 }
 
@@ -563,6 +720,8 @@ func (m *Model) refreshTheme() {
 	m.themeSignature = nextSig
 	m.searchInput.PromptStyle = theme.SearchPrompt
 	m.searchInput.PlaceholderStyle = theme.HeaderHint
+	m.renameInput.PromptStyle = theme.SearchPrompt
+	m.renameInput.PlaceholderStyle = theme.HeaderHint
 	m.syncPreviewViewport(true)
 }
 
@@ -693,7 +852,7 @@ func (m Model) renderListBox(lay layoutSpec) string {
 	content := strings.Join(lines, "\n")
 
 	borderStyle := m.theme.ModalBorder
-	if !m.showHelp && (m.searching || !m.previewFocused) {
+	if !m.showHelp && (m.searching || m.renaming || !m.previewFocused) {
 		borderStyle = m.theme.ModalBorderActive
 	}
 
@@ -722,7 +881,7 @@ func (m Model) renderPreviewBox(lay layoutSpec) string {
 	content := strings.Join(lines, "\n")
 
 	borderStyle := m.theme.ModalBorder
-	if !m.showHelp && m.previewFocused && !m.searching {
+	if !m.showHelp && m.previewFocused && !m.searching && !m.renaming {
 		borderStyle = m.theme.ModalBorderActive
 	}
 
@@ -766,7 +925,7 @@ func (m Model) headerCounter() string {
 	return fmt.Sprintf("%d sessions", activeTotal)
 }
 
-func (m Model) headerLayout(innerW int) (counter string, maxLeft int, inputWidth int) {
+func (m Model) headerLayout(innerW int, prompt string) (counter string, maxLeft int, inputWidth int) {
 	counter = m.headerCounter()
 	counterW := lipgloss.Width(counter)
 	if innerW < counterW+5 {
@@ -779,31 +938,45 @@ func (m Model) headerLayout(innerW int) (counter string, maxLeft int, inputWidth
 		maxLeft = max(1, innerW)
 	}
 
-	promptW := lipgloss.Width(m.searchInput.Prompt)
+	promptW := lipgloss.Width(prompt)
 	// Reserve Prompt and 1 cursor cell added by textinput.View().
 	inputWidth = max(1, maxLeft-promptW-1)
 	return counter, maxLeft, inputWidth
 }
 
-func (m *Model) syncSearchInputWidth() {
+func (m *Model) syncHeaderInputWidths() {
 	_, _, innerW, _ := m.boxDimensions()
-	_, _, inputW := m.headerLayout(innerW)
-	m.searchInput.Width = inputW
+	_, _, searchW := m.headerLayout(innerW, m.searchInput.Prompt)
+	m.searchInput.Width = searchW
+	_, _, renameW := m.headerLayout(innerW, m.renameInput.Prompt)
+	m.renameInput.Width = renameW
+}
+
+func (m Model) renderHeaderInput(input textinput.Model, width, maxLeft int) string {
+	input.Width = width
+	rendered := input.View()
+	if lipgloss.Width(rendered) > maxLeft {
+		return lipgloss.NewStyle().MaxWidth(maxLeft).Render(rendered)
+	}
+	return rendered
 }
 
 func (m Model) headerView(innerW int) string {
-	counter, maxLeft, inputW := m.headerLayout(innerW)
+	activePrompt := m.searchInput.Prompt
+	if m.renaming {
+		activePrompt = m.renameInput.Prompt
+	}
+	counter, maxLeft, inputW := m.headerLayout(innerW, activePrompt)
 
 	var leftStyled string
-	if m.searching {
-		m.searchInput.Width = inputW
-		leftStyled = m.searchInput.View()
-		if lipgloss.Width(leftStyled) > maxLeft {
-			leftStyled = lipgloss.NewStyle().MaxWidth(maxLeft).Render(leftStyled)
-		}
-	} else if q := m.searchInput.Value(); q != "" {
-		leftStyled = m.theme.SearchPrompt.Render(components.TruncateWidth("/ "+q, maxLeft))
-	} else {
+	switch {
+	case m.renaming:
+		leftStyled = m.renderHeaderInput(m.renameInput, inputW, maxLeft)
+	case m.searching:
+		leftStyled = m.renderHeaderInput(m.searchInput, inputW, maxLeft)
+	case m.searchInput.Value() != "":
+		leftStyled = m.theme.SearchPrompt.Render(components.TruncateWidth("/ "+m.searchInput.Value(), maxLeft))
+	default:
 		leftStyled = m.theme.HeaderHint.Render(components.TruncateWidth("/ search by title, prompt, or directory", maxLeft))
 	}
 
@@ -854,11 +1027,14 @@ func (m Model) footerView(innerW int) string {
 	}
 
 	var hint string
-	if m.searching {
+	switch {
+	case m.renaming:
+		hint = "Enter save · Esc cancel · empty resets"
+	case m.searching:
 		hint = "↑↓ select · Enter open · Esc clear"
-	} else if m.searchInput.Value() != "" {
+	case m.searchInput.Value() != "":
 		hint = "↑↓ select · Enter open · Esc clear · ? keys · q quit"
-	} else {
+	default:
 		hint = "↑↓ select · / search · Enter open · ? keys · q quit"
 	}
 	return m.theme.Footer.Render(components.TruncateWidth(hint, innerW))
@@ -882,6 +1058,7 @@ func whichKeyEntries() []components.WhichKeyEntry {
 		{Desc: "Search sessions", Key: "/"},
 		{Desc: "Expand / collapse subsessions", Key: "l / h"},
 		{Desc: "Focus preview / back to list", Key: "Tab"},
+		{Desc: "Rename selected session", Key: "r"},
 		{Desc: "Pin / unpin session", Key: "p"},
 		{Desc: "Archive / unarchive session", Key: "a"},
 		{Desc: "Show / hide archived sessions", Key: "A"},

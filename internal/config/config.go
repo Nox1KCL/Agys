@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/Nox1KCL/Agys/internal/utils"
 )
 
 const (
@@ -44,14 +47,45 @@ func Default() (Config, error) {
 	return cfg, nil
 }
 
+// DefaultWithOverrides returns the default Config with optional dataDir and stateFile overrides.
+// Relative paths and "~/" prefixes are resolved to clean absolute paths.
+func DefaultWithOverrides(dataDir, stateFile string) (Config, error) {
+	cfg, err := Default()
+	if err != nil {
+		return Config{}, err
+	}
+
+	if strings.TrimSpace(dataDir) != "" {
+		resolved, err := utils.ResolveAbsPath(dataDir)
+		if err != nil {
+			return Config{}, fmt.Errorf("resolve data directory: %w", err)
+		}
+		applyDataRoot(&cfg, resolved)
+	}
+
+	if strings.TrimSpace(stateFile) != "" {
+		resolved, err := utils.ResolveAbsPath(stateFile)
+		if err != nil {
+			return Config{}, fmt.Errorf("resolve state file: %w", err)
+		}
+		cfg.StateFile = resolved
+	}
+
+	return cfg, nil
+}
+
 // FromRoot creates a Config from an explicit Antigravity data directory path.
 func FromRoot(root string) Config {
 	cleanRoot := filepath.Clean(root)
-	return Config{
-		AntigravityDir: cleanRoot,
-		BrainDir:       filepath.Join(cleanRoot, brainDirName),
-		KnowledgeDir:   filepath.Join(cleanRoot, knowledgeDirName),
-		AnnotationsDir: filepath.Join(cleanRoot, annotationsDirName),
-		StateFile:      filepath.Join(cleanRoot, "agys_state.json"),
-	}
+	var cfg Config
+	applyDataRoot(&cfg, cleanRoot)
+	cfg.StateFile = filepath.Join(cleanRoot, "agys_state.json")
+	return cfg
+}
+
+func applyDataRoot(cfg *Config, cleanRoot string) {
+	cfg.AntigravityDir = cleanRoot
+	cfg.BrainDir = filepath.Join(cleanRoot, brainDirName)
+	cfg.KnowledgeDir = filepath.Join(cleanRoot, knowledgeDirName)
+	cfg.AnnotationsDir = filepath.Join(cleanRoot, annotationsDirName)
 }

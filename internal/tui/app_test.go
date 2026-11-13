@@ -173,6 +173,12 @@ func TestViewFitsWithinTerminalBounds(t *testing.T) {
 			m = next.(Model)
 		}
 		assertBounds("search-long-query", m, size.w, size.h)
+
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		m = next.(Model)
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+		m = next.(Model)
+		assertBounds("rename", m, size.w, size.h)
 	}
 }
 
@@ -370,5 +376,113 @@ func TestWhichKeyOverlayAndMinimalFooter(t *testing.T) {
 	m = next.(Model)
 	if m.helpOffset == 0 {
 		t.Fatal("expected which-key overlay to scroll on compact terminal height")
+	}
+}
+
+func TestRenameSessionPersistenceAndReset(t *testing.T) {
+	now := time.Date(2026, 11, 12, 23, 0, 0, 0, time.UTC)
+	cfg := config.FromRoot(t.TempDir())
+	m := New(cfg)
+	m.now = func() time.Time { return now }
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	m = next.(Model)
+	next, _ = m.Update(sessionsLoadedMsg{sessions: sampleSessions(now)})
+	m = next.(Model)
+
+	// Press 'r' on first session (Delos), replace text with custom name, and press Esc -> no change.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = next.(Model)
+	if !m.renaming {
+		t.Fatal("expected renaming=true after pressing 'r'")
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'X'}})
+	m = next.(Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(Model)
+	if m.renaming || m.rows[0].Session.Title != "Delos Chrome Extension Setup" {
+		t.Fatalf("expected Esc to cancel rename, renaming=%v title=%q", m.renaming, m.rows[0].Session.Title)
+	}
+
+	// Rename Delos session via 'r' + Enter.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = next.(Model)
+	for range len("Delos Chrome Extension Setup") {
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m = next.(Model)
+	}
+	for _, ch := range "Custom Delos Title" {
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		m = next.(Model)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+
+	if m.renaming {
+		t.Fatal("expected renaming=false after Enter")
+	}
+	if m.rows[0].Session.Title != "Custom Delos Title" {
+		t.Fatalf("expected updated row title, got %q", m.rows[0].Session.Title)
+	}
+	if !strings.Contains(m.View(), "Custom Delos Title") {
+		t.Fatalf("expected updated title in rendered view")
+	}
+
+	st, err := session.LoadUserState(cfg.StateFile)
+	if err != nil {
+		t.Fatalf("LoadUserState failed: %v", err)
+	}
+	ov := st.Sessions["11111111-1111-4111-8111-111111111111"]
+	if ov.Title == nil || *ov.Title != "Custom Delos Title" {
+		t.Fatalf("expected persisted custom title, got %+v", ov)
+	}
+
+	// Clearing the input on Enter resets to original title.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = next.(Model)
+	for range len("Custom Delos Title") {
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m = next.(Model)
+	}
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if m.rows[0].Session.Title != "Delos Chrome Extension Setup" {
+		t.Fatalf("expected restored original title, got %q", m.rows[0].Session.Title)
+	}
+}
+
+func TestOptionsExitOnResumeAndInitialQuery(t *testing.T) {
+	now := time.Date(2026, 11, 12, 23, 0, 0, 0, time.UTC)
+	fakeBinDir := t.TempDir()
+	fakeAgy := filepath.Join(fakeBinDir, "agy")
+	if err := os.WriteFile(fakeAgy, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake agy: %v", err)
+	}
+	t.Setenv("PATH", fakeBinDir)
+
+	m := NewWithOptions(config.FromRoot(t.TempDir()), Options{
+		InitialQuery: "synapsed",
+		ExitOnResume: true,
+		ShowArchived: true,
+	})
+	m.now = func() time.Time { return now }
+
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 36})
+	m = next.(Model)
+	next, _ = m.Update(sessionsLoadedMsg{sessions: sampleSessions(now)})
+	m = next.(Model)
+
+	if len(m.rows) != 1 || m.rows[0].Session.ID != "33333333-3333-4333-8333-333333333333" {
+		t.Fatalf("expected initial query filter applied, got %+v", m.rows)
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(Model)
+	if cmd == nil {
+		t.Fatal("expected quit cmd when ExitOnResume=true")
+	}
+	target, ok := m.PendingResume()
+	if !ok || target.ID != "33333333-3333-4333-8333-333333333333" || target.WorkDir != "/home/nox/IT-projects/Synapsed" {
+		t.Fatalf("unexpected PendingResume target: ok=%v target=%+v", ok, target)
 	}
 }

@@ -36,3 +36,25 @@ func ExpandHome(path string) (string, error) {
 
 	return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
 }
+
+// ResolveAbsPath trims whitespace, expands a leading "~/", and converts relative paths to clean absolute paths.
+func ResolveAbsPath(path string) (string, error) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return "", nil
+	}
+
+	expanded, err := ExpandHome(trimmed)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(expanded) {
+		abs, err := filepath.Abs(expanded)
+		if err != nil {
+			return "", fmt.Errorf("resolve absolute path %q: %w", expanded, err)
+		}
+		expanded = abs
+	}
+
+	return filepath.Clean(expanded), nil
+}

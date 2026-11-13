@@ -8,13 +8,14 @@ A terminal TUI for browsing, searching, organizing, and resuming **Google Antigr
 - **Live search (`/`)** across session titles, working directories, first and last user prompts, Knowledge Items, and subsessions.
 - **Omarchy-aligned styling**: reads your active Omarchy palette (`~/.local/state/omarchy/current/theme/colors.toml` or `~/.config/omarchy/current/theme/colors.toml`) with live reload on focus, preserves transparent terminal backgrounds, and falls back to ANSI 16 terminal colors elsewhere.
 - **Right-hand preview pane**: displays metadata (pin/archive flags, relative timestamp, last visited directory, UUID, subsessions), first and last user prompts, Knowledge Items, and artifacts (`task.md` with checklist progress, `implementation_plan.md`, `walkthrough.md`). Switches via `Tab` on narrow terminals (`< 96` columns).
-- **Pin & archive workflow**:
+- **Pin, archive & custom rename**:
   - `p` toggles pinning (`★`), keeping pinned sessions at the top of the list.
   - `a` archives or restores a session (archived sessions are hidden by default).
   - `A` toggles visibility of archived sessions.
+  - `r` renames a session (submit empty to reset back to the auto-detected title).
   - State persists in `~/.config/agys/state.json` (or `$XDG_CONFIG_HOME/agys/state.json`) layered over `annotations/*.pbtxt` without modifying Antigravity CLI files.
 - **Minimal footer & `?` which-key overlay**: shows only essential bindings in the bottom bar while pressing `?` opens a floating LazyVim/Yazi-style keybindings menu on top.
-- **Subsession tree navigation** (`l`/`h` or `→`/`←`) and instant session resume via `agy --conversation=<UUID>`.
+- **Subsession tree navigation** (`l`/`h` or `→`/`←`) and instant session resume via `agy --conversation=<UUID>` (auto-resolving `agy` and launching inside the session's `Last visited` directory when present).
 
 ## Installation (Linux)
 
@@ -54,9 +55,21 @@ cd Agys
 make build    # builds ./bin/agys
 ```
 
+## CLI Flags
+
+```text
+-d, --dir <path>       Antigravity CLI data directory (default: ~/.gemini/antigravity-cli)
+    --state <path>     Agys state file path (default: ~/.config/agys/state.json)
+-s, --search <query>   Start with an initial search filter
+-a, --archived         Include archived sessions on startup
+-e, --exit-on-resume   Exit agys and replace with agy on Enter (returns to shell on /exit)
+-v, --version          Print version information and exit
+-h, --help             Show help message and exit
+```
+
 ## Keybindings
 
-Press `?` anywhere outside search input to open the floating keybindings overlay.
+Press `?` anywhere outside text input to open the floating keybindings overlay.
 
 | Key | Action |
 | --- | --- |
@@ -66,6 +79,7 @@ Press `?` anywhere outside search input to open the floating keybindings overlay
 | `/` | Enter live search mode |
 | `l` / `→`, `h` / `←` | Expand / collapse subsessions |
 | `Tab` | Focus preview pane / return to list |
+| `r` | Rename selected session (`state.json` override) |
 | `p` | Pin / unpin session (`★`) |
 | `a` | Archive / restore session |
 | `A` | Show / hide archived sessions |

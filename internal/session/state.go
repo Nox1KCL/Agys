@@ -9,10 +9,11 @@ import (
 	"strings"
 )
 
-// StateOverride stores explicit pin/archive overrides persisted by agys.
+// StateOverride stores explicit pin, archive, and title overrides persisted by agys.
 type StateOverride struct {
-	Pinned   *bool `json:"pinned,omitempty"`
-	Archived *bool `json:"archived,omitempty"`
+	Pinned   *bool   `json:"pinned,omitempty"`
+	Archived *bool   `json:"archived,omitempty"`
+	Title    *string `json:"title,omitempty"`
 }
 
 // UserState holds user-managed pin and archive overrides keyed by session UUID.
@@ -60,8 +61,15 @@ func SaveUserState(path string, st UserState) error {
 		Sessions: make(map[string]StateOverride, len(st.Sessions)),
 	}
 	for id, ov := range st.Sessions {
-		if ov.Pinned == nil && ov.Archived == nil {
+		cleanTitle := ""
+		if ov.Title != nil {
+			cleanTitle = NormalizeTitle(*ov.Title)
+		}
+		if ov.Pinned == nil && ov.Archived == nil && cleanTitle == "" {
 			continue
+		}
+		if ov.Title != nil {
+			ov.Title = stringPtr(cleanTitle)
 		}
 		cleaned.Sessions[strings.ToLower(strings.TrimSpace(id))] = ov
 	}
@@ -126,6 +134,47 @@ func (s *UserState) SetArchived(id string, archived bool) {
 	s.Sessions[key] = ov
 }
 
+// SetTitle records or clears a custom title override for session id.
+// Passing an empty/whitespace-only title removes any previous custom title override.
+func (s *UserState) SetTitle(id, title string) {
+	if s.Sessions == nil {
+		s.Sessions = make(map[string]StateOverride)
+	}
+	key := strings.ToLower(strings.TrimSpace(id))
+	if key == "" {
+		return
+	}
+	ov := s.Sessions[key]
+	clean := NormalizeTitle(title)
+	if clean == "" {
+		ov.Title = nil
+		if ov.Pinned == nil && ov.Archived == nil {
+			delete(s.Sessions, key)
+			return
+		}
+	} else {
+		ov.Title = stringPtr(clean)
+	}
+	s.Sessions[key] = ov
+}
+
+// NormalizeTitle cleans a custom session title onto a single trimmed line.
+func NormalizeTitle(raw string) string {
+	replacer := strings.NewReplacer("\r", " ", "\n", " ", "\t", " ")
+	return strings.TrimSpace(replacer.Replace(raw))
+}
+
+// RestoreDefaultTitle reverts s to its original auto-discovered title.
+func RestoreDefaultTitle(s *Session) {
+	if s.DefaultTitle != "" {
+		s.Title = s.DefaultTitle
+		s.TitleSource = s.DefaultTitleSource
+		return
+	}
+	s.Title = untitledSessionLabel
+	s.TitleSource = TitleSourceNone
+}
+
 // ApplyUserState merges persisted user overrides onto discovered sessions.
 func ApplyUserState(sessions map[string]Session, st UserState) {
 	for id, ov := range st.Sessions {
@@ -133,16 +182,30 @@ func ApplyUserState(sessions map[string]Session, st UserState) {
 		if !ok {
 			continue
 		}
+		if s.DefaultTitle == "" && s.Title != "" {
+			s.DefaultTitle = s.Title
+			s.DefaultTitleSource = s.TitleSource
+		}
 		if ov.Pinned != nil {
 			s.Pinned = *ov.Pinned
 		}
 		if ov.Archived != nil {
 			s.Archived = *ov.Archived
 		}
+		if ov.Title != nil {
+			if clean := NormalizeTitle(*ov.Title); clean != "" {
+				s.Title = clean
+				s.TitleSource = TitleSourceCustom
+			}
+		}
 		sessions[id] = s
 	}
 }
 
 func boolPtr(v bool) *bool {
+	return &v
+}
+
+func stringPtr(v string) *string {
 	return &v
 }

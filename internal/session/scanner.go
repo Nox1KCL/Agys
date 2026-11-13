@@ -78,6 +78,8 @@ func Collect(cfg config.Config) (map[string]Session, error) {
 
 	for id, s := range sessions {
 		resolveTitleFallback(&s, detailsByID[id])
+		s.DefaultTitle = s.Title
+		s.DefaultTitleSource = s.TitleSource
 		sessions[id] = s
 	}
 

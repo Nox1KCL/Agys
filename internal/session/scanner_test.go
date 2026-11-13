@@ -278,6 +278,36 @@ func TestNewResumeCmd(t *testing.T) {
 	if len(cmd.Args) != 2 || cmd.Args[1] != "--conversation="+validID {
 		t.Fatalf("unexpected cmd args: %v", cmd.Args)
 	}
+
+	// Verify auto-resolving binary via XDG_BIN_HOME and cmd.Dir fallback from missing subdir.
+	home := t.TempDir()
+	xdgBin := filepath.Join(home, "custom-bin")
+	if err := os.MkdirAll(xdgBin, 0o755); err != nil {
+		t.Fatalf("mkdir xdgBin: %v", err)
+	}
+	fakeAgy := filepath.Join(xdgBin, "agy")
+	if err := os.WriteFile(fakeAgy, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake agy: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_BIN_HOME", xdgBin)
+
+	projDir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatalf("mkdir projDir: %v", err)
+	}
+
+	cmdWithDir, err := NewResumeCmdWithDir(validID, "~/proj/missing-subdir")
+	if err != nil {
+		t.Fatalf("NewResumeCmdWithDir failed: %v", err)
+	}
+	if cmdWithDir.Path != fakeAgy {
+		t.Fatalf("resolved binary = %q, want %q", cmdWithDir.Path, fakeAgy)
+	}
+	if cmdWithDir.Dir != projDir {
+		t.Fatalf("cmd.Dir = %q, want %q", cmdWithDir.Dir, projDir)
+	}
 }
 
 func TestCollectExtractsPromptsAndWorkDir(t *testing.T) {

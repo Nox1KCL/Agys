@@ -7,6 +7,7 @@ import "time"
 type TitleSource string
 
 const (
+	TitleSourceCustom     TitleSource = "custom"
 	TitleSourceAnnotation TitleSource = "annotation"
 	TitleSourceSubagent   TitleSource = "subagent"
 	TitleSourceKnowledge  TitleSource = "knowledge"
@@ -27,23 +28,25 @@ type KnowledgeItem struct {
 
 // Session represents a single Antigravity CLI conversation stored under brain/.
 type Session struct {
-	ID             string
-	Title          string
-	TitleSource    TitleSource
-	Path           string
-	WorkDir        string
-	FirstPrompt    string
-	LastPrompt     string
-	UpdatedAt      time.Time
-	LastViewedAt   time.Time
-	Pinned         bool
-	Archived       bool
-	ParentID       string
-	SubagentRole   string
-	SubagentType   string
-	WorkspaceURIs  []string
-	SubSessions    []Session
-	KnowledgeItems []KnowledgeItem
+	ID                 string
+	Title              string
+	TitleSource        TitleSource
+	DefaultTitle       string
+	DefaultTitleSource TitleSource
+	Path               string
+	WorkDir            string
+	FirstPrompt        string
+	LastPrompt         string
+	UpdatedAt          time.Time
+	LastViewedAt       time.Time
+	Pinned             bool
+	Archived           bool
+	ParentID           string
+	SubagentRole       string
+	SubagentType       string
+	WorkspaceURIs      []string
+	SubSessions        []Session
+	KnowledgeItems     []KnowledgeItem
 }
 
 // TitlesMap converts a session dictionary into a plain uuid -> title map.
