@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ const (
 	defaultDataDir       = "antigravity-cli"
 	defaultAppConfigDir  = "agys"
 	defaultStateFileName = "state.json"
+	defaultCacheFileName = "index.gob"
 	brainDirName         = "brain"
 	knowledgeDirName     = "knowledge"
 	annotationsDirName   = "annotations"
@@ -27,6 +29,7 @@ type Config struct {
 	KnowledgeDir   string
 	AnnotationsDir string
 	StateFile      string
+	CacheFile      string
 }
 
 // Default builds a Config rooted at ~/.gemini/antigravity-cli with user state under ~/.config/agys/state.json.
@@ -44,6 +47,12 @@ func Default() (Config, error) {
 		configBase = filepath.Join(home, ".config")
 	}
 	cfg.StateFile = filepath.Join(configBase, defaultAppConfigDir, defaultStateFileName)
+
+	cacheBase, cacheErr := os.UserCacheDir()
+	if cacheErr != nil || cacheBase == "" {
+		cacheBase = filepath.Join(home, ".cache")
+	}
+	cfg.CacheFile = filepath.Join(cacheBase, defaultAppConfigDir, defaultCacheFileName)
 	return cfg, nil
 }
 
@@ -60,7 +69,14 @@ func DefaultWithOverrides(dataDir, stateFile string) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("resolve data directory: %w", err)
 		}
-		applyDataRoot(&cfg, resolved)
+		if resolved != cfg.AntigravityDir {
+			applyDataRoot(&cfg, resolved)
+			if cfg.CacheFile != "" {
+				h := fnv.New32a()
+				_, _ = h.Write([]byte(resolved))
+				cfg.CacheFile = filepath.Join(filepath.Dir(cfg.CacheFile), fmt.Sprintf("index-%08x.gob", h.Sum32()))
+			}
+		}
 	}
 
 	if strings.TrimSpace(stateFile) != "" {
@@ -80,6 +96,7 @@ func FromRoot(root string) Config {
 	var cfg Config
 	applyDataRoot(&cfg, cleanRoot)
 	cfg.StateFile = filepath.Join(cleanRoot, "agys_state.json")
+	cfg.CacheFile = filepath.Join(cleanRoot, "agys_index.gob")
 	return cfg
 }
 

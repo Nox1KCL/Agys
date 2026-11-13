@@ -91,3 +91,98 @@ func TestSearchRankingAndSubsessions(t *testing.T) {
 		}
 	})
 }
+
+func TestSearchIndexMatchesSearchWithOptions(t *testing.T) {
+	sessions := map[string]Session{
+		"11111111-1111-4111-8111-111111111111": {
+			ID:          "11111111-1111-4111-8111-111111111111",
+			Title:       "Deploy API Gateway",
+			WorkDir:     "/home/nox/work/gateway",
+			FirstPrompt: "Plan canary deployment rollout",
+			LastPrompt:  "Verify rollback thresholds",
+			Pinned:      true,
+			SubSessions: []Session{
+				{
+					ID:           "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+					Title:        "Token Inspector",
+					SubagentRole: "Security Auditor",
+					ParentID:     "11111111-1111-4111-8111-111111111111",
+				},
+			},
+			KnowledgeItems: []KnowledgeItem{
+				{
+					Title:   "Circuit Breaker",
+					Summary: "Exponential backoff prevents upstream overload",
+				},
+			},
+		},
+		"22222222-2222-4222-8222-222222222222": {
+			ID:          "22222222-2222-4222-8222-222222222222",
+			Title:       "Cache Optimization",
+			WorkDir:     "/home/nox/work/agys",
+			FirstPrompt: "Benchmark gob snapshot loading",
+			LastPrompt:  "Tune worker concurrency",
+		},
+		"33333333-3333-4333-8333-333333333333": {
+			ID:          "33333333-3333-4333-8333-333333333333",
+			Title:       "Legacy Migration",
+			WorkDir:     "/home/nox/archive/legacy",
+			FirstPrompt: "Archive old deployment scripts",
+			Archived:    true,
+			SubSessions: []Session{
+				{
+					ID:           "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+					Title:        "Legacy Verifier",
+					SubagentRole: "QA Helper",
+					ParentID:     "33333333-3333-4333-8333-333333333333",
+				},
+			},
+		},
+	}
+
+	idx := NewSearchIndex(sessions)
+
+	cases := []struct {
+		name  string
+		query string
+		opts  SearchOptions
+	}{
+		{name: "empty active", query: "", opts: SearchOptions{IncludeArchived: false}},
+		{name: "empty with archived", query: "", opts: SearchOptions{IncludeArchived: true}},
+		{name: "multi token match", query: "deploy canary", opts: SearchOptions{IncludeArchived: false}},
+		{name: "fuzzy title match", query: "cchopt", opts: SearchOptions{IncludeArchived: false}},
+		{name: "subsession match", query: "auditor", opts: SearchOptions{IncludeArchived: false}},
+		{name: "knowledge match", query: "upstream", opts: SearchOptions{IncludeArchived: false}},
+		{name: "archived hidden", query: "legacy", opts: SearchOptions{IncludeArchived: false}},
+		{name: "archived shown", query: "legacy", opts: SearchOptions{IncludeArchived: true}},
+		{name: "archived subsession hidden", query: "verifier", opts: SearchOptions{IncludeArchived: false}},
+		{name: "archived subsession shown", query: "verifier", opts: SearchOptions{IncludeArchived: true}},
+		{name: "no match", query: "zzzzqxz", opts: SearchOptions{IncludeArchived: true}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := idx.Search(tc.query, tc.opts)
+			want := SearchWithOptions(sessions, tc.query, tc.opts)
+			if len(got) != len(want) {
+				t.Fatalf("len mismatch for %q (%+v): got %d, want %d", tc.query, tc.opts, len(got), len(want))
+			}
+			for i := range want {
+				if got[i].Session.ID != want[i].Session.ID {
+					t.Fatalf("result[%d] ID mismatch: got %s, want %s", i, got[i].Session.ID, want[i].Session.ID)
+				}
+				if got[i].Score != want[i].Score {
+					t.Fatalf("result[%d] score mismatch: got %d, want %d", i, got[i].Score, want[i].Score)
+				}
+				if len(got[i].MatchedSubIDs) != len(want[i].MatchedSubIDs) {
+					t.Fatalf("result[%d] MatchedSubIDs len mismatch: got %v, want %v", i, got[i].MatchedSubIDs, want[i].MatchedSubIDs)
+				}
+				for subID, matched := range want[i].MatchedSubIDs {
+					if got[i].MatchedSubIDs[subID] != matched {
+						t.Fatalf("result[%d] MatchedSubIDs[%s] mismatch: got %v, want %v", i, subID, got[i].MatchedSubIDs[subID], matched)
+					}
+				}
+			}
+		})
+	}
+}

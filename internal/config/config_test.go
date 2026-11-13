@@ -8,8 +8,10 @@ import (
 func TestDefaultAndFromRoot(t *testing.T) {
 	home := t.TempDir()
 	xdgConfig := filepath.Join(home, "custom-config")
+	xdgCache := filepath.Join(home, "custom-cache")
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+	t.Setenv("XDG_CACHE_HOME", xdgCache)
 
 	cfg, err := Default()
 	if err != nil {
@@ -33,10 +35,17 @@ func TestDefaultAndFromRoot(t *testing.T) {
 	if cfg.StateFile != wantState {
 		t.Fatalf("StateFile = %q, want %q", cfg.StateFile, wantState)
 	}
+	wantCache := filepath.Join(xdgCache, "agys", "index.gob")
+	if cfg.CacheFile != wantCache {
+		t.Fatalf("CacheFile = %q, want %q", cfg.CacheFile, wantCache)
+	}
 
 	isolated := FromRoot(filepath.Join(home, "sandbox"))
 	if isolated.StateFile != filepath.Join(home, "sandbox", "agys_state.json") {
 		t.Fatalf("FromRoot StateFile = %q", isolated.StateFile)
+	}
+	if isolated.CacheFile != filepath.Join(home, "sandbox", "agys_index.gob") {
+		t.Fatalf("FromRoot CacheFile = %q", isolated.CacheFile)
 	}
 
 	overridden, err := DefaultWithOverrides("~/custom-antigravity", "~/custom-state.json")
@@ -49,5 +58,8 @@ func TestDefaultAndFromRoot(t *testing.T) {
 	}
 	if overridden.StateFile != filepath.Join(home, "custom-state.json") {
 		t.Fatalf("overridden StateFile = %q", overridden.StateFile)
+	}
+	if overridden.CacheFile == cfg.CacheFile || filepath.Dir(overridden.CacheFile) != filepath.Dir(cfg.CacheFile) {
+		t.Fatalf("expected isolated CacheFile for custom data dir, got %q (default %q)", overridden.CacheFile, cfg.CacheFile)
 	}
 }

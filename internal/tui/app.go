@@ -76,11 +76,12 @@ type Model struct {
 	loading        bool
 	errMsg         string
 
-	sessions  map[string]session.Session
-	userState session.UserState
-	results   []session.SearchResult
-	rows      []components.Row
-	expanded  map[string]bool
+	sessions    map[string]session.Session
+	searchIndex *session.SearchIndex
+	userState   session.UserState
+	results     []session.SearchResult
+	rows        []components.Row
+	expanded    map[string]bool
 
 	preview          viewport.Model
 	previewSessionID string
@@ -186,6 +187,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.userState = session.UserState{Sessions: make(map[string]session.StateOverride)}
 		}
 		m.artifactCache = make(map[string]session.SessionArtifacts)
+		m.rebuildSearchIndex()
 		m.refreshRows(true)
 		m.syncPreviewViewport(true)
 		return m, nil
@@ -518,6 +520,7 @@ func (m *Model) commitRename() {
 		}
 	}
 
+	m.rebuildSearchIndex()
 	m.refreshRows(true)
 	m.syncPreviewViewport(true)
 }
@@ -560,6 +563,7 @@ func (m *Model) togglePin() {
 	} else {
 		m.errMsg = ""
 	}
+	m.rebuildSearchIndex()
 	m.refreshRows(true)
 	m.syncPreviewViewport(true)
 }
@@ -583,6 +587,7 @@ func (m *Model) toggleArchive() {
 	} else {
 		m.errMsg = ""
 	}
+	m.rebuildSearchIndex()
 	m.refreshRows(true)
 	m.syncPreviewViewport(true)
 }
@@ -625,6 +630,10 @@ func (m *Model) collapseSelected() {
 	m.rebuildRows(targetID, m.cursor)
 }
 
+func (m *Model) rebuildSearchIndex() {
+	m.searchIndex = session.NewSearchIndex(m.sessions)
+}
+
 func (m *Model) refreshRows(preserveSelection bool) {
 	selectedID := ""
 	fallbackCursor := 0
@@ -632,9 +641,12 @@ func (m *Model) refreshRows(preserveSelection bool) {
 		selectedID = m.rows[m.cursor].Session.ID
 		fallbackCursor = m.cursor
 	}
-	m.results = session.SearchWithOptions(m.sessions, m.searchInput.Value(), session.SearchOptions{
-		IncludeArchived: m.showArchived,
-	})
+	opts := session.SearchOptions{IncludeArchived: m.showArchived}
+	if m.searchIndex != nil {
+		m.results = m.searchIndex.Search(m.searchInput.Value(), opts)
+	} else {
+		m.results = session.SearchWithOptions(m.sessions, m.searchInput.Value(), opts)
+	}
 	m.syncHeaderInputWidths()
 	m.rebuildRows(selectedID, fallbackCursor)
 }

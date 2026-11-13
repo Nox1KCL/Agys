@@ -4,34 +4,62 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Nox1KCL/Agys/internal/config"
 	"github.com/Nox1KCL/Agys/internal/utils"
 )
 
-const untitledSessionLabel = "(untitled)"
+const (
+	untitledSessionLabel = "(untitled)"
+	maxScanWorkers       = 8
+)
+
+type scanJob struct {
+	index      int
+	id         string
+	sessionDir string
+	annPath    string
+	dirModTime time.Time
+}
+
+type scanResult struct {
+	id    string
+	entry cachedSessionEntry
+	hit   bool
+}
 
 // Collect scans Antigravity data directories, indexes prompts/workdirs, links
 // Knowledge Items and subagent child sessions, and returns all sessions by UUID.
 func Collect(cfg config.Config) (map[string]Session, error) {
-	kiBySession, err := LoadKnowledgeItems(cfg.KnowledgeDir)
-	if err != nil {
-		return nil, err
+	prevCache, hasCache := loadIndexCache(cfg.CacheFile, cfg.AntigravityDir)
+
+	knowledgeFP, knowledgeExists := computeKnowledgeFingerprint(cfg.KnowledgeDir)
+	var kiBySession map[string][]KnowledgeItem
+	cacheDirty := !hasCache
+
+	if hasCache && prevCache.KnowledgeExists == knowledgeExists && prevCache.KnowledgeFP == knowledgeFP {
+		kiBySession = prevCache.KnowledgeBySession
+	} else {
+		var err error
+		kiBySession, err = LoadKnowledgeItems(cfg.KnowledgeDir)
+		if err != nil {
+			return nil, err
+		}
+		cacheDirty = true
 	}
 
-	entries, err := os.ReadDir(cfg.BrainDir)
+	dirEntries, err := os.ReadDir(cfg.BrainDir)
 	if err != nil {
 		return nil, fmt.Errorf("read brain directory %q: %w", cfg.BrainDir, err)
 	}
 
-	sessions := make(map[string]Session)
-	detailsByID := make(map[string]transcriptDetails)
-	var subagentLinks []subagentLink
-
-	for _, entry := range entries {
+	jobs := make([]scanJob, 0, len(dirEntries))
+	for _, entry := range dirEntries {
 		if !entry.IsDir() || !utils.IsUUIDv4(entry.Name()) {
 			continue
 		}
@@ -44,40 +72,91 @@ func Collect(cfg config.Config) (map[string]Session, error) {
 			dirModTime = info.ModTime()
 		}
 
-		td := extractTranscriptDetails(sessionDir)
-		detailsByID[id] = td
-
-		s := Session{
-			ID:             id,
-			Path:           sessionDir,
-			WorkDir:        td.WorkDir,
-			FirstPrompt:    td.FirstPrompt,
-			LastPrompt:     td.LastPrompt,
-			UpdatedAt:      latestFileMtime(sessionDir, dirModTime),
-			KnowledgeItems: kiBySession[id],
+		annPath := ""
+		if cfg.AnnotationsDir != "" {
+			annPath = filepath.Join(cfg.AnnotationsDir, id+".pbtxt")
 		}
 
-		if cfg.AnnotationsDir != "" {
-			annPath := filepath.Join(cfg.AnnotationsDir, id+".pbtxt")
-			if meta, ok, annErr := loadAnnotation(annPath); annErr == nil && ok {
-				s.Pinned = meta.Pinned
-				s.Archived = meta.Archived
-				s.LastViewedAt = meta.UpdatedAt
-				if meta.Title != "" {
-					s.Title = meta.Title
-					s.TitleSource = TitleSourceAnnotation
-				}
+		jobs = append(jobs, scanJob{
+			index:      len(jobs),
+			id:         id,
+			sessionDir: sessionDir,
+			annPath:    annPath,
+			dirModTime: dirModTime,
+		})
+	}
+
+	results := scanSessionJobs(jobs, prevCache, hasCache)
+
+	sessions := make(map[string]Session, len(results))
+	detailsByID := make(map[string]transcriptDetails, len(results))
+	mdTitles := make(map[string]string, len(results))
+	var subagentLinks []subagentLink
+	nextCacheSessions := make(map[string]cachedSessionEntry, len(results))
+
+	for i, res := range results {
+		if !res.hit {
+			cacheDirty = true
+		}
+
+		rec := res.entry
+		nextCacheSessions[res.id] = rec
+		detailsByID[res.id] = rec.Details
+		mdTitles[res.id] = rec.MarkdownTitle
+
+		sessionDir := jobs[i].sessionDir
+
+		var kis []KnowledgeItem
+		if items := kiBySession[res.id]; len(items) > 0 {
+			kis = make([]KnowledgeItem, len(items))
+			copy(kis, items)
+		}
+
+		s := Session{
+			ID:             res.id,
+			Path:           sessionDir,
+			WorkDir:        rec.Details.WorkDir,
+			FirstPrompt:    rec.Details.FirstPrompt,
+			LastPrompt:     rec.Details.LastPrompt,
+			UpdatedAt:      rec.UpdatedAt,
+			KnowledgeItems: kis,
+		}
+
+		if rec.HasAnnotation {
+			s.Pinned = rec.AnnotationPinned
+			s.Archived = rec.AnnotationArch
+			s.LastViewedAt = rec.AnnotationViewed
+			if rec.AnnotationTitle != "" {
+				s.Title = rec.AnnotationTitle
+				s.TitleSource = TitleSourceAnnotation
 			}
 		}
 
-		subagentLinks = append(subagentLinks, loadSubagentDescriptors(sessionDir, id)...)
-		sessions[id] = s
+		if len(rec.SubagentLinks) > 0 {
+			subagentLinks = append(subagentLinks, rec.SubagentLinks...)
+		}
+		sessions[res.id] = s
+	}
+
+	if hasCache && len(prevCache.Sessions) != len(nextCacheSessions) {
+		cacheDirty = true
+	}
+
+	if cacheDirty && cfg.CacheFile != "" {
+		_ = saveIndexCache(cfg.CacheFile, cachedIndex{
+			Version:            cacheSchemaVersion,
+			DataRoot:           cfg.AntigravityDir,
+			KnowledgeFP:        knowledgeFP,
+			KnowledgeExists:    knowledgeExists,
+			KnowledgeBySession: kiBySession,
+			Sessions:           nextCacheSessions,
+		})
 	}
 
 	attachSubagentMetadata(sessions, detailsByID, subagentLinks)
 
 	for id, s := range sessions {
-		resolveTitleFallback(&s, detailsByID[id])
+		resolveTitleFallback(&s, detailsByID[id], mdTitles[id])
 		s.DefaultTitle = s.Title
 		s.DefaultTitleSource = s.TitleSource
 		sessions[id] = s
@@ -93,6 +172,84 @@ func Collect(cfg config.Config) (map[string]Session, error) {
 
 	bindSubSessions(sessions)
 	return sessions, nil
+}
+
+func scanSessionJobs(jobs []scanJob, prevCache cachedIndex, hasCache bool) []scanResult {
+	results := make([]scanResult, len(jobs))
+	if len(jobs) == 0 {
+		return results
+	}
+
+	workerCount := runtime.GOMAXPROCS(0)
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > maxScanWorkers {
+		workerCount = maxScanWorkers
+	}
+	if workerCount > len(jobs) {
+		workerCount = len(jobs)
+	}
+
+	jobCh := make(chan scanJob, len(jobs))
+	for _, j := range jobs {
+		jobCh <- j
+	}
+	close(jobCh)
+
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer wg.Done()
+			for j := range jobCh {
+				fp := computeSessionFingerprint(j.sessionDir, j.annPath)
+				if hasCache {
+					if cached, ok := prevCache.Sessions[j.id]; ok && cached.Fingerprint == fp {
+						results[j.index] = scanResult{
+							id:    j.id,
+							entry: cached,
+							hit:   true,
+						}
+						continue
+					}
+				}
+
+				entry := buildSessionCacheEntry(j, fp)
+				results[j.index] = scanResult{
+					id:    j.id,
+					entry: entry,
+					hit:   false,
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	return results
+}
+
+func buildSessionCacheEntry(j scanJob, fp uint64) cachedSessionEntry {
+	td := extractTranscriptDetails(j.sessionDir)
+	entry := cachedSessionEntry{
+		Fingerprint:   fp,
+		UpdatedAt:     latestFileMtime(j.sessionDir, j.dirModTime),
+		Details:       td,
+		MarkdownTitle: resolveMarkdownTitle(j.sessionDir),
+		SubagentLinks: loadSubagentDescriptors(j.sessionDir, j.id),
+	}
+
+	if j.annPath != "" {
+		if meta, ok, annErr := loadAnnotation(j.annPath); annErr == nil && ok {
+			entry.HasAnnotation = true
+			entry.AnnotationTitle = meta.Title
+			entry.AnnotationPinned = meta.Pinned
+			entry.AnnotationArch = meta.Archived
+			entry.AnnotationViewed = meta.UpdatedAt
+		}
+	}
+
+	return entry
 }
 
 // CollectTitles scans Antigravity data directories and returns a uuid -> title dictionary.
@@ -205,7 +362,7 @@ func sortSessionSlice(items []Session) {
 	})
 }
 
-func resolveTitleFallback(s *Session, td transcriptDetails) {
+func resolveTitleFallback(s *Session, td transcriptDetails, mdTitle string) {
 	if s.Title != "" {
 		return
 	}
@@ -227,8 +384,8 @@ func resolveTitleFallback(s *Session, td transcriptDetails) {
 		}
 	}
 
-	if title := resolveMarkdownTitle(s.Path); title != "" {
-		s.Title = title
+	if mdTitle != "" {
+		s.Title = mdTitle
 		s.TitleSource = TitleSourceMarkdown
 		return
 	}

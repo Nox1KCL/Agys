@@ -1,6 +1,7 @@
 package session
 
 import (
+	"os"
 	"sort"
 	"strings"
 
@@ -20,6 +21,85 @@ type SearchOptions struct {
 	IncludeArchived bool
 }
 
+type queryToken struct {
+	text  string
+	runes []rune
+}
+
+type indexedField struct {
+	lower      string
+	runes      []rune
+	weight     int
+	allowFuzzy bool
+}
+
+type indexedSession struct {
+	session Session
+	fields  []indexedField
+}
+
+type indexedRoot struct {
+	entry    indexedSession
+	children []indexedSession
+}
+
+// SearchIndex stores pre-sorted root sessions and pre-normalized fields for fast keystroke filtering.
+type SearchIndex struct {
+	roots []indexedRoot
+}
+
+// NewSearchIndex builds a reusable search index from sessions ordered by pinned state and freshness.
+func NewSearchIndex(sessions map[string]Session) *SearchIndex {
+	allRoots := SortedRoots(sessions)
+	home, _ := os.UserHomeDir()
+
+	roots := make([]indexedRoot, len(allRoots))
+	for i, root := range allRoots {
+		children := make([]indexedSession, len(root.SubSessions))
+		for j, child := range root.SubSessions {
+			children[j] = buildIndexedSession(child, home)
+		}
+		roots[i] = indexedRoot{
+			entry:    buildIndexedSession(root, home),
+			children: children,
+		}
+	}
+
+	return &SearchIndex{roots: roots}
+}
+
+// Search ranks matching root sessions against query without re-sorting or lowercasing candidates.
+func (idx *SearchIndex) Search(query string, opts SearchOptions) []SearchResult {
+	if idx == nil || len(idx.roots) == 0 {
+		return nil
+	}
+
+	tokens := tokenizeQuery(query)
+	if len(tokens) == 0 {
+		results := make([]SearchResult, 0, len(idx.roots))
+		for _, r := range idx.roots {
+			if !opts.IncludeArchived && r.entry.session.Archived {
+				continue
+			}
+			results = append(results, SearchResult{Session: r.entry.session})
+		}
+		return results
+	}
+
+	results := make([]SearchResult, 0, len(idx.roots))
+	for _, r := range idx.roots {
+		if !opts.IncludeArchived && r.entry.session.Archived {
+			continue
+		}
+		if res, ok := matchIndexedRoot(r, tokens); ok {
+			results = append(results, res)
+		}
+	}
+
+	sortSearchResults(results)
+	return results
+}
+
 // Search ranks non-archived root sessions against query using fzf-style multi-token matching.
 // An empty query returns all non-archived root sessions ordered by pinned state and freshness.
 func Search(sessions map[string]Session, query string) []SearchResult {
@@ -28,66 +108,94 @@ func Search(sessions map[string]Session, query string) []SearchResult {
 
 // SearchWithOptions ranks root sessions against query according to opts.
 func SearchWithOptions(sessions map[string]Session, query string, opts SearchOptions) []SearchResult {
-	allRoots := SortedRoots(sessions)
-	roots := make([]Session, 0, len(allRoots))
-	for _, r := range allRoots {
-		if !opts.IncludeArchived && r.Archived {
-			continue
-		}
-		roots = append(roots, r)
-	}
-
 	tokens := tokenizeQuery(query)
 	if len(tokens) == 0 {
-		results := make([]SearchResult, len(roots))
-		for i, r := range roots {
-			results[i] = SearchResult{Session: r}
+		allRoots := SortedRoots(sessions)
+		results := make([]SearchResult, 0, len(allRoots))
+		for _, r := range allRoots {
+			if !opts.IncludeArchived && r.Archived {
+				continue
+			}
+			results = append(results, SearchResult{Session: r})
 		}
 		return results
 	}
 
-	results := make([]SearchResult, 0, len(roots))
-	for _, root := range roots {
-		if res, ok := matchRootSession(root, tokens); ok {
-			results = append(results, res)
+	return NewSearchIndex(sessions).Search(query, opts)
+}
+
+func buildIndexedSession(s Session, home string) indexedSession {
+	fields := make([]indexedField, 0, 8+len(s.WorkspaceURIs)+2*len(s.KnowledgeItems))
+	add := func(raw string, weight int, allowFuzzy bool) {
+		if raw == "" {
+			return
 		}
+		lower := strings.ToLower(raw)
+		var runes []rune
+		if allowFuzzy {
+			runes = []rune(lower)
+		}
+		fields = append(fields, indexedField{
+			lower:      lower,
+			runes:      runes,
+			weight:     weight,
+			allowFuzzy: allowFuzzy,
+		})
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].Score != results[j].Score {
-			return results[i].Score > results[j].Score
-		}
-		if results[i].Session.Pinned != results[j].Session.Pinned {
-			return results[i].Session.Pinned
-		}
-		if !results[i].Session.UpdatedAt.Equal(results[j].Session.UpdatedAt) {
-			return results[i].Session.UpdatedAt.After(results[j].Session.UpdatedAt)
-		}
-		return results[i].Session.ID < results[j].Session.ID
-	})
+	add(s.Title, 120, true)
+	add(s.SubagentRole, 110, true)
+	add(s.SubagentType, 60, true)
+	add(s.WorkDir, 95, true)
+	if short := utils.ShortenHomeWith(s.WorkDir, home); short != s.WorkDir {
+		add(short, 95, true)
+	}
+	for _, uri := range s.WorkspaceURIs {
+		add(uri, 90, true)
+	}
+	for _, ki := range s.KnowledgeItems {
+		add(ki.Title, 80, true)
+		add(ki.Summary, 60, false)
+	}
+	add(s.FirstPrompt, 55, false)
+	add(s.LastPrompt, 55, false)
+	add(s.ID, 45, false)
 
-	return results
+	return indexedSession{
+		session: s,
+		fields:  fields,
+	}
 }
 
-func tokenizeQuery(query string) []string {
-	fields := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
-	return fields
+func tokenizeQuery(query string) []queryToken {
+	parts := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
+	if len(parts) == 0 {
+		return nil
+	}
+	tokens := make([]queryToken, len(parts))
+	for i, part := range parts {
+		tokens[i] = queryToken{
+			text:  part,
+			runes: []rune(part),
+		}
+	}
+	return tokens
 }
 
-func matchRootSession(root Session, tokens []string) (SearchResult, bool) {
+func matchIndexedRoot(root indexedRoot, tokens []queryToken) (SearchResult, bool) {
 	totalScore := 0
 	var matchedSubs map[string]bool
 
 	for _, tok := range tokens {
-		bestTokenScore := scoreSessionStructured(root, tok, 100)
+		bestTokenScore := scoreIndexedSession(root.entry, tok, 100)
 
-		for _, child := range root.SubSessions {
-			childScore := scoreSessionStructured(child, tok, 70)
+		for _, child := range root.children {
+			childScore := scoreIndexedSession(child, tok, 70)
 			if childScore > 0 {
 				if matchedSubs == nil {
 					matchedSubs = make(map[string]bool)
 				}
-				matchedSubs[child.ID] = true
+				matchedSubs[child.session.ID] = true
 				if childScore > bestTokenScore {
 					bestTokenScore = childScore
 				}
@@ -101,69 +209,45 @@ func matchRootSession(root Session, tokens []string) (SearchResult, bool) {
 	}
 
 	return SearchResult{
-		Session:       root,
+		Session:       root.entry.session,
 		Score:         totalScore,
 		MatchedSubIDs: matchedSubs,
 	}, true
 }
 
-func scoreSessionStructured(s Session, token string, multiplierPct int) int {
+func scoreIndexedSession(s indexedSession, tok queryToken, multiplierPct int) int {
 	best := 0
-	check := func(candidate string, weight int, allowFuzzy bool) {
-		if candidate == "" {
-			return
-		}
-		raw := scoreText(strings.ToLower(candidate), token, allowFuzzy)
+	for _, f := range s.fields {
+		raw := scoreField(f, tok)
 		if raw == 0 {
-			return
+			continue
 		}
-		weighted := (raw * weight * multiplierPct) / 10000
+		weighted := (raw * f.weight * multiplierPct) / 10000
 		if weighted > best {
 			best = weighted
 		}
 	}
-
-	check(s.Title, 120, true)
-	check(s.SubagentRole, 110, true)
-	check(s.SubagentType, 60, true)
-	check(s.WorkDir, 95, true)
-	if short := utils.ShortenHome(s.WorkDir); short != s.WorkDir {
-		check(short, 95, true)
-	}
-	for _, uri := range s.WorkspaceURIs {
-		check(uri, 90, true)
-	}
-	for _, ki := range s.KnowledgeItems {
-		check(ki.Title, 80, true)
-		check(ki.Summary, 60, false)
-	}
-	check(s.FirstPrompt, 55, false)
-	check(s.LastPrompt, 55, false)
-	check(s.ID, 45, false)
-
 	return best
 }
 
-func scoreText(textLower, token string, allowFuzzy bool) int {
-	if idx := strings.Index(textLower, token); idx >= 0 {
+func scoreField(f indexedField, tok queryToken) int {
+	if idx := strings.Index(f.lower, tok.text); idx >= 0 {
 		score := 60
 		if idx == 0 {
 			score += 25
-		} else if isBoundaryByte(textLower[idx-1]) {
+		} else if isBoundaryByte(f.lower[idx-1]) {
 			score += 18
 		}
 		return score
 	}
 
-	if !allowFuzzy {
+	if !f.allowFuzzy {
 		return 0
 	}
-	return fuzzySubsequenceScore(textLower, token)
+	return fuzzyRunesScore(f.runes, tok.runes)
 }
 
-func fuzzySubsequenceScore(textLower, token string) int {
-	tRunes := []rune(textLower)
-	qRunes := []rune(token)
+func fuzzyRunesScore(tRunes, qRunes []rune) int {
 	if len(qRunes) == 0 || len(qRunes) > len(tRunes) {
 		return 0
 	}
@@ -192,6 +276,21 @@ func fuzzySubsequenceScore(textLower, token string) int {
 	}
 
 	return 0
+}
+
+func sortSearchResults(results []SearchResult) {
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		if results[i].Session.Pinned != results[j].Session.Pinned {
+			return results[i].Session.Pinned
+		}
+		if !results[i].Session.UpdatedAt.Equal(results[j].Session.UpdatedAt) {
+			return results[i].Session.UpdatedAt.After(results[j].Session.UpdatedAt)
+		}
+		return results[i].Session.ID < results[j].Session.ID
+	})
 }
 
 func isBoundaryByte(b byte) bool {

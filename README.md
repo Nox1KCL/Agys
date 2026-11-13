@@ -5,7 +5,8 @@ A terminal TUI for browsing, searching, organizing, and resuming **Google Antigr
 ## Features
 
 - **Automatic CLI session discovery** from `~/.gemini/antigravity-cli/` (`brain/`, `knowledge/`, `annotations/`).
-- **Live search (`/`)** across session titles, working directories, first and last user prompts, Knowledge Items, and subsessions.
+- **Incremental index cache**: stores parsed session and Knowledge Item metadata in `~/.cache/agys/index.gob` (or `$XDG_CACHE_HOME/agys/index.gob`) invalidated via file-stat fingerprints for fast startups without re-reading unchanged logs.
+- **Live search (`/`)** across session titles, working directories, first and last user prompts, Knowledge Items, and subsessions backed by a pre-normalized in-memory search index.
 - **Omarchy-aligned styling**: reads your active Omarchy palette (`~/.local/state/omarchy/current/theme/colors.toml` or `~/.config/omarchy/current/theme/colors.toml`) with live reload on focus, preserves transparent terminal backgrounds, and falls back to ANSI 16 terminal colors elsewhere.
 - **Right-hand preview pane**: displays metadata (pin/archive flags, relative timestamp, last visited directory, UUID, subsessions), first and last user prompts, Knowledge Items, and artifacts (`task.md` with checklist progress, `implementation_plan.md`, `walkthrough.md`). Switches via `Tab` on narrow terminals (`< 96` columns).
 - **Pin, archive & custom rename**:
@@ -104,8 +105,8 @@ Agys/
 │   └── agys/
 │       └── main.go          # CLI entrypoint
 ├── internal/
-│   ├── config/              # Paths for ~/.gemini/antigravity-cli and ~/.config/agys/state.json
-│   ├── session/             # Scanners for brain/, knowledge/, annotations/, state.json, and search
+│   ├── config/              # Paths for ~/.gemini/antigravity-cli, state.json, and ~/.cache/agys/index.gob
+│   ├── session/             # Scanners, incremental gob cache, state.json, and in-memory search index
 │   ├── tui/                 # Root dual-pane Bubble Tea model and key handling
 │   │   ├── components/      # Session list, preview formatter, and floating which-key overlay
 │   │   └── styles/          # ANSI terminal palette Lip Gloss styles
