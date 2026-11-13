@@ -65,8 +65,43 @@ make build    # builds ./bin/agys
 -s, --search <query>   Start with an initial search filter
 -a, --archived         Include archived sessions on startup
 -e, --exit-on-resume   Exit agys and replace with agy on Enter (returns to shell on /exit)
+    --plugin-state     Print headless JSON snapshot for shell integrations and exit
+    --refresh-usage    Force fresh quota fetch when used with --plugin-state
+    --action <name>    Run headless session action (pin, unpin, archive, unarchive, trash, restore, purge)
+    --id <target>      Session UUID or trash entry name used with --action
 -v, --version          Print version information and exit
 -h, --help             Show help message and exit
+```
+
+## Omarchy Bar Plugin (`nox.agys`)
+
+This repository also ships a lightweight native [Omarchy](https://omarchy.org/) shell bar plugin in `plugin/nox.agys/` powered directly by the `agys` binary (`--plugin-state` / `--action`):
+
+- **Bar indicator**: theme-colored star icon with a compact corner orb displaying active session count and pulsing when working.
+- **Quota Limits**: live model group limits and reset countdowns.
+- **Paginated sessions**: dedicated **Pinned** and **Recent** lists paginated in chunks of 5 (`‹ 1 2 3 … ›`), plus **Archive** and **Trash** views.
+- **Hover actions**: pin/unpin, archive/unarchive, move to Trash, restore, and permanent delete (with inline confirmation).
+- **Low-quota desktop alerts**: notifications via `omarchy-notification-send` below the configured threshold.
+
+Install the plugin after installing `agys`:
+
+```bash
+make install install-plugin
+omarchy restart shell
+```
+
+Then add `nox.agys` to `~/.config/omarchy/shell.json` under `bar.layout.right`:
+
+```json
+{
+  "id": "nox.agys",
+  "refreshIntervalSec": 60,
+  "pageSize": 5,
+  "showBadge": true,
+  "enableQuotaAlerts": true,
+  "quotaAlertThreshold": 15,
+  "terminalCommand": ""
+}
 ```
 
 ## Keybindings
@@ -117,6 +152,8 @@ Agys/
 │   │   └── styles/          # ANSI terminal palette Lip Gloss styles
 │   └── utils/               # Date, home path, UUID, and truncation helpers
 ├── install.sh               # Linux installer (GitHub Releases / local binary + PATH)
+├── plugin/
+│   └── nox.agys/            # Omarchy bar-widget QML plugin backed by agys
 ├── Makefile
 ├── go.mod
 └── README.md
@@ -125,10 +162,11 @@ Agys/
 ## Development Commands
 
 ```bash
-make run      # Run in development mode
-make build    # Build binary into ./bin/agys
-make install  # Build locally and install via ./install.sh --local
-make test     # Run test suite
-make fmt      # Format Go sources (gofmt)
-make vet      # Run go vet
+make run             # Run in development mode
+make build           # Build binary into ./bin/agys
+make install         # Build locally and install via ./install.sh --local
+make install-plugin  # Install nox.agys into ~/.config/omarchy/plugins/nox.agys
+make test            # Run test suite
+make fmt             # Format Go sources (gofmt)
+make vet             # Run go vet
 ```
