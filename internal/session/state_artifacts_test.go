@@ -118,6 +118,13 @@ func TestUserStateOverridesAndOrdering(t *testing.T) {
 	if sessions[idUnpinnedFromAnn].Title != "Newer Unpinned" || sessions[idUnpinnedFromAnn].TitleSource != TitleSourceAnnotation {
 		t.Fatalf("expected restored annotation title, got %+v", sessions[idUnpinnedFromAnn])
 	}
+
+	if !st.Delete(idPinnedByState) || st.Delete(idPinnedByState) {
+		t.Fatal("expected UserState.Delete to report true only once for existing ID")
+	}
+	if _, exists := st.Sessions[idPinnedByState]; exists {
+		t.Fatalf("expected deleted ID removed from UserState, got %+v", st.Sessions)
+	}
 }
 
 func TestLoadArtifactsCheckboxesAndTruncation(t *testing.T) {

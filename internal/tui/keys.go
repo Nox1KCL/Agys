@@ -14,10 +14,14 @@ type KeyMap struct {
 	ToggleSubs         key.Binding
 	Collapse           key.Binding
 	TogglePreviewFocus key.Binding
+	ToggleAccount      key.Binding
+	RefreshUsage       key.Binding
 	Rename             key.Binding
 	TogglePin          key.Binding
 	ToggleArchive      key.Binding
 	ToggleShowArchived key.Binding
+	DeleteTrash        key.Binding
+	DeletePermanent    key.Binding
 	Help               key.Binding
 	Confirm            key.Binding
 	Clear              key.Binding
@@ -67,6 +71,14 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("tab"),
 			key.WithHelp("Tab", "focus preview"),
 		),
+		ToggleAccount: key.NewBinding(
+			key.WithKeys("u"),
+			key.WithHelp("u", "account usage"),
+		),
+		RefreshUsage: key.NewBinding(
+			key.WithKeys("U"),
+			key.WithHelp("U", "refresh usage"),
+		),
 		Rename: key.NewBinding(
 			key.WithKeys("r"),
 			key.WithHelp("r", "rename session"),
@@ -82,6 +94,14 @@ func DefaultKeyMap() KeyMap {
 		ToggleShowArchived: key.NewBinding(
 			key.WithKeys("A"),
 			key.WithHelp("A", "show / hide archived"),
+		),
+		DeleteTrash: key.NewBinding(
+			key.WithKeys("d"),
+			key.WithHelp("d", "move session to trash"),
+		),
+		DeletePermanent: key.NewBinding(
+			key.WithKeys("D"),
+			key.WithHelp("D", "delete permanently"),
 		),
 		Help: key.NewBinding(
 			key.WithKeys("?"),

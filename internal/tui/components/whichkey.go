@@ -137,6 +137,16 @@ func renderWhichKeyRow(entry WhichKeyEntry, width int, theme styles.Theme) strin
 // OverlayBottomCenter composites a floating popup window on top of a terminal-sized background string,
 // anchored bottom-center like LazyVim/Yazi overlays while keeping every line strictly ANSI-safe.
 func OverlayBottomCenter(bg, fg string, termW, termH int) string {
+	return overlayAt(bg, fg, termW, termH, false)
+}
+
+// OverlayCenter composites a floating popup window centered vertically and horizontally
+// on top of a terminal-sized background string while keeping every line strictly ANSI-safe.
+func OverlayCenter(bg, fg string, termW, termH int) string {
+	return overlayAt(bg, fg, termW, termH, true)
+}
+
+func overlayAt(bg, fg string, termW, termH int, centerVertical bool) string {
 	if termW <= 0 || termH <= 0 {
 		return fg
 	}
@@ -156,9 +166,14 @@ func OverlayBottomCenter(bg, fg string, termW, termH int) string {
 	}
 
 	startX := max(0, (termW-popW)/2)
-	startY := termH - popH - 2
-	if startY < 1 || popH >= termH-4 {
+	var startY int
+	if centerVertical {
 		startY = max(0, (len(bgLines)-popH)/2)
+	} else {
+		startY = termH - popH - 2
+		if startY < 1 || popH >= termH-4 {
+			startY = max(0, (len(bgLines)-popH)/2)
+		}
 	}
 
 	for i, fgLine := range fgLines {

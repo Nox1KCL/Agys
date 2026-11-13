@@ -13,9 +13,11 @@ import (
 
 // Default ANSI palette indices used as fallback when no Omarchy palette is found.
 var (
-	AccentColor = lipgloss.Color("4") // Terminal Blue (matches Omarchy ANSI accent slot)
-	MutedColor  = lipgloss.Color("8") // Terminal BrightBlack
-	ErrorColor  = lipgloss.Color("1") // Terminal Red
+	AccentColor    = lipgloss.Color("4") // Terminal Blue (matches Omarchy ANSI accent slot)
+	MutedColor     = lipgloss.Color("8") // Terminal BrightBlack
+	ErrorColor     = lipgloss.Color("1") // Terminal Red
+	QuotaCyanColor = lipgloss.Color("6") // Terminal Cyan
+	QuotaWarmColor = lipgloss.Color("3") // Terminal Yellow/Amber
 )
 
 // OmarchyPalette captures color tokens parsed from Omarchy's current colors.toml.
@@ -30,6 +32,9 @@ type OmarchyPalette struct {
 	LightForeground     string
 	DarkForeground      string
 	Blue                string
+	Cyan                string
+	Yellow              string
+	Orange              string
 	Red                 string
 	SourcePath          string
 }
@@ -38,6 +43,7 @@ type OmarchyPalette struct {
 type Theme struct {
 	ModalBorder       lipgloss.Style
 	ModalBorderActive lipgloss.Style
+	ModalBorderDanger lipgloss.Style
 	HeaderHint        lipgloss.Style
 	SearchPrompt      lipgloss.Style
 	Divider           lipgloss.Style
@@ -54,6 +60,11 @@ type Theme struct {
 	PreviewLabel      lipgloss.Style
 	PreviewBody       lipgloss.Style
 	PreviewMuted      lipgloss.Style
+	QuotaCyan         lipgloss.Style
+	QuotaWarm         lipgloss.Style
+	QuotaWarn         lipgloss.Style
+	QuotaDanger       lipgloss.Style
+	QuotaTrack        lipgloss.Style
 	Footer            lipgloss.Style
 	ErrorText         lipgloss.Style
 }
@@ -83,6 +94,10 @@ func DefaultANSIFallbackTheme() Theme {
 		ModalBorderActive: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(AccentColor).
+			Padding(1, 2),
+		ModalBorderDanger: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ErrorColor).
 			Padding(1, 2),
 		HeaderHint: lipgloss.NewStyle().
 			Foreground(MutedColor),
@@ -119,6 +134,16 @@ func DefaultANSIFallbackTheme() Theme {
 		PreviewBody: lipgloss.NewStyle(),
 		PreviewMuted: lipgloss.NewStyle().
 			Foreground(MutedColor),
+		QuotaCyan: lipgloss.NewStyle().
+			Foreground(QuotaCyanColor),
+		QuotaWarm: lipgloss.NewStyle().
+			Foreground(QuotaWarmColor),
+		QuotaWarn: lipgloss.NewStyle().
+			Foreground(QuotaWarmColor),
+		QuotaDanger: lipgloss.NewStyle().
+			Foreground(ErrorColor),
+		QuotaTrack: lipgloss.NewStyle().
+			Foreground(MutedColor),
 		Footer: lipgloss.NewStyle().
 			Foreground(MutedColor),
 		ErrorText: lipgloss.NewStyle().
@@ -134,6 +159,9 @@ func ThemeFromPalette(p OmarchyPalette) Theme {
 	secondaryText := lipgloss.Color(firstNonEmpty(p.LightForeground, p.DarkForeground, p.Muted, string(MutedColor)))
 	dimText := lipgloss.Color(firstNonEmpty(p.DarkForeground, p.Muted, string(MutedColor)))
 	errColor := lipgloss.Color(firstNonEmpty(p.Red, string(ErrorColor)))
+	quotaCyan := lipgloss.Color(firstNonEmpty(p.Cyan, p.Accent, p.Blue, string(QuotaCyanColor)))
+	quotaWarm := lipgloss.Color(firstNonEmpty(p.Orange, p.Yellow, p.Red, string(QuotaWarmColor)))
+	quotaWarn := lipgloss.Color(firstNonEmpty(p.Yellow, p.Orange, string(QuotaWarmColor)))
 
 	baseFg := lipgloss.NewStyle()
 	if p.Foreground != "" {
@@ -158,6 +186,10 @@ func ThemeFromPalette(p OmarchyPalette) Theme {
 		ModalBorderActive: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(accent).
+			Padding(1, 2),
+		ModalBorderDanger: lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(errColor).
 			Padding(1, 2),
 		HeaderHint: lipgloss.NewStyle().
 			Foreground(secondaryText),
@@ -190,6 +222,16 @@ func ThemeFromPalette(p OmarchyPalette) Theme {
 		PreviewBody: baseFg,
 		PreviewMuted: lipgloss.NewStyle().
 			Foreground(dimText),
+		QuotaCyan: lipgloss.NewStyle().
+			Foreground(quotaCyan),
+		QuotaWarm: lipgloss.NewStyle().
+			Foreground(quotaWarm),
+		QuotaWarn: lipgloss.NewStyle().
+			Foreground(quotaWarn),
+		QuotaDanger: lipgloss.NewStyle().
+			Foreground(errColor),
+		QuotaTrack: lipgloss.NewStyle().
+			Foreground(borderMuted),
 		Footer: lipgloss.NewStyle().
 			Foreground(secondaryText),
 		ErrorText: lipgloss.NewStyle().
@@ -302,6 +344,12 @@ func parseColorsTOML(content string) OmarchyPalette {
 			p.DarkForeground = normalizeHexColor(val)
 		case "blue":
 			p.Blue = normalizeHexColor(val)
+		case "cyan":
+			p.Cyan = normalizeHexColor(val)
+		case "yellow":
+			p.Yellow = normalizeHexColor(val)
+		case "orange":
+			p.Orange = normalizeHexColor(val)
 		case "red":
 			p.Red = normalizeHexColor(val)
 		}

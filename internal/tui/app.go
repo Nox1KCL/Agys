@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/Nox1KCL/Agys/internal/session"
 	"github.com/Nox1KCL/Agys/internal/tui/components"
 	"github.com/Nox1KCL/Agys/internal/tui/styles"
+	"github.com/Nox1KCL/Agys/internal/utils"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -18,8 +20,10 @@ import (
 )
 
 const (
-	twoPaneMinWidth = 96
-	paneGapCols     = 2
+	twoPaneMinWidth     = 96
+	threePaneMinWidth   = 138
+	paneGapCols         = 2
+	usageRefreshTimeout = 12 * time.Second
 )
 
 type sessionsLoadedMsg struct {
@@ -29,18 +33,35 @@ type sessionsLoadedMsg struct {
 	err       error
 }
 
+type usageLoadedMsg struct {
+	usage session.AccountUsage
+	found bool
+	err   error
+}
+
 type sessionResumedMsg struct {
 	err error
 }
 
+type deleteConfirmState struct {
+	mode           session.DeleteMode
+	plan           session.DeletePlan
+	parentTitle    string
+	trashPath      string
+	confirmFocused bool
+}
+
 type layoutSpec struct {
 	twoPane       bool
+	threePane     bool
 	boxH          int
 	innerH        int
 	listBoxW      int
 	listInnerW    int
 	previewBoxW   int
 	previewInnerW int
+	accountBoxW   int
+	accountInnerW int
 }
 
 // Options configures optional startup behavior for the root TUI model.
@@ -68,9 +89,11 @@ type Model struct {
 	renaming       bool
 	renameTargetID string
 	previewFocused bool
+	accountFocused bool
 	showArchived   bool
 	exitOnResume   bool
 	pendingResume  *ResumeTarget
+	confirmDelete  *deleteConfirmState
 	showHelp       bool
 	helpOffset     int
 	loading        bool
@@ -87,6 +110,14 @@ type Model struct {
 	previewSessionID string
 	previewWidth     int
 	artifactCache    map[string]session.SessionArtifacts
+
+	account           viewport.Model
+	accountUsage      session.AccountUsage
+	accountLoaded     bool
+	accountRefreshing bool
+	accountErr        string
+	accountWidth      int
+	accountVersion    int
 
 	cursor int
 	offset int
@@ -135,10 +166,17 @@ func NewWithOptions(cfg config.Config, opts Options) Model {
 		userState:      session.UserState{Sessions: make(map[string]session.StateOverride)},
 		preview:        viewport.New(0, 0),
 		artifactCache:  make(map[string]session.SessionArtifacts),
+		account:        viewport.New(0, 0),
 		now:            time.Now,
+	}
+	if cached, ok, _ := session.LoadCachedAccountUsage(cfg, m.now()); ok {
+		m.accountUsage = cached
+		m.accountLoaded = true
+		m.accountVersion = 1
 	}
 	m.syncHeaderInputWidths()
 	m.syncPreviewViewport(true)
+	m.syncAccountViewport(true)
 	return m
 }
 
@@ -152,7 +190,10 @@ func (m Model) PendingResume() (ResumeTarget, bool) {
 
 // Init satisfies tea.Model.
 func (m Model) Init() tea.Cmd {
-	return loadSessionsCmd(m.cfg)
+	return tea.Batch(
+		loadSessionsCmd(m.cfg),
+		fetchAccountUsageCmd(m.cfg, false, m.now),
+	)
 }
 
 // Update handles incoming Bubble Tea messages.
@@ -165,6 +206,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncHeaderInputWidths()
 		m.ensureCursorVisible(m.listHeight(lay.innerH))
 		m.syncPreviewViewport(false)
+		m.syncAccountViewport(false)
 		m.clampHelpOffset()
 		return m, nil
 
@@ -192,6 +234,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncPreviewViewport(true)
 		return m, nil
 
+	case usageLoadedMsg:
+		m.accountRefreshing = false
+		if msg.err != nil {
+			m.accountErr = msg.err.Error()
+		} else {
+			m.accountErr = ""
+		}
+		if msg.found {
+			m.accountUsage = msg.usage
+			m.accountLoaded = true
+		}
+		m.accountVersion++
+		m.syncAccountViewport(true)
+		return m, nil
+
 	case tea.FocusMsg:
 		m.refreshTheme()
 		return m, nil
@@ -203,17 +260,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.errMsg = ""
 		}
-		return m, loadSessionsCmd(m.cfg)
+		return m, tea.Batch(
+			loadSessionsCmd(m.cfg),
+			fetchAccountUsageCmd(m.cfg, true, m.now),
+		)
 
 	case tea.KeyMsg:
 		if m.renaming {
 			return m.updateRename(msg)
+		}
+		if m.confirmDelete != nil {
+			return m.updateDeleteConfirm(msg)
 		}
 		if m.searching {
 			return m.updateSearch(msg)
 		}
 		if m.showHelp {
 			return m.updateHelp(msg)
+		}
+		if m.accountFocused {
+			return m.updateAccountFocus(msg)
 		}
 		if m.previewFocused {
 			return m.updatePreviewFocus(msg)
@@ -315,7 +381,12 @@ func (m Model) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case key.Matches(msg, m.keys.TogglePreviewFocus):
 		m.previewFocused = true
+		m.accountFocused = false
 		m.syncPreviewViewport(false)
+	case key.Matches(msg, m.keys.ToggleAccount):
+		return m.focusAccountPanel()
+	case key.Matches(msg, m.keys.RefreshUsage):
+		return m.startRefreshAccountUsage()
 	case key.Matches(msg, m.keys.Rename):
 		return m.startRename()
 	case key.Matches(msg, m.keys.TogglePin):
@@ -324,6 +395,10 @@ func (m Model) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleArchive()
 	case key.Matches(msg, m.keys.ToggleShowArchived):
 		m.toggleShowArchived()
+	case key.Matches(msg, m.keys.DeleteTrash):
+		return m.startDeleteConfirm(session.DeleteModeTrash)
+	case key.Matches(msg, m.keys.DeletePermanent):
+		return m.startDeleteConfirm(session.DeleteModePermanent)
 	case key.Matches(msg, m.keys.Up):
 		m.moveCursor(-1)
 	case key.Matches(msg, m.keys.Down):
@@ -358,8 +433,13 @@ func (m Model) updatePreviewFocus(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.TogglePreviewFocus), msg.Type == tea.KeyEsc:
 		m.previewFocused = false
 		return m, nil
+	case key.Matches(msg, m.keys.ToggleAccount):
+		return m.focusAccountPanel()
+	case key.Matches(msg, m.keys.RefreshUsage):
+		return m.startRefreshAccountUsage()
 	case key.Matches(msg, m.keys.Search):
 		m.previewFocused = false
+		m.accountFocused = false
 		m.searching = true
 		m.errMsg = ""
 		m.syncHeaderInputWidths()
@@ -373,22 +453,80 @@ func (m Model) updatePreviewFocus(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleArchive()
 	case key.Matches(msg, m.keys.ToggleShowArchived):
 		m.toggleShowArchived()
+	case key.Matches(msg, m.keys.DeleteTrash):
+		return m.startDeleteConfirm(session.DeleteModeTrash)
+	case key.Matches(msg, m.keys.DeletePermanent):
+		return m.startDeleteConfirm(session.DeleteModePermanent)
 	case key.Matches(msg, m.keys.Confirm):
 		return m.resumeSelected()
-	case key.Matches(msg, m.keys.Up):
-		m.preview.LineUp(1)
-	case key.Matches(msg, m.keys.Down):
-		m.preview.LineDown(1)
-	case key.Matches(msg, m.keys.PageUp):
-		m.preview.HalfPageUp()
-	case key.Matches(msg, m.keys.PageDown):
-		m.preview.HalfPageDown()
-	case key.Matches(msg, m.keys.Top):
-		m.preview.GotoTop()
-	case key.Matches(msg, m.keys.Bottom):
-		m.preview.GotoBottom()
+	default:
+		scrollViewport(&m.preview, msg, m.keys)
 	}
 	return m, nil
+}
+
+func (m Model) updateAccountFocus(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Quit):
+		return m, tea.Quit
+	case key.Matches(msg, m.keys.Help):
+		m.showHelp = true
+		m.helpOffset = 0
+		return m, nil
+	case key.Matches(msg, m.keys.ToggleAccount), key.Matches(msg, m.keys.TogglePreviewFocus), msg.Type == tea.KeyEsc:
+		m.accountFocused = false
+		return m, nil
+	case key.Matches(msg, m.keys.RefreshUsage):
+		return m.startRefreshAccountUsage()
+	case key.Matches(msg, m.keys.Search):
+		m.accountFocused = false
+		m.searching = true
+		m.errMsg = ""
+		m.syncHeaderInputWidths()
+		cmd := m.searchInput.Focus()
+		return m, cmd
+	default:
+		scrollViewport(&m.account, msg, m.keys)
+	}
+	return m, nil
+}
+
+func scrollViewport(vp *viewport.Model, msg tea.KeyMsg, keys KeyMap) bool {
+	switch {
+	case key.Matches(msg, keys.Up):
+		vp.LineUp(1)
+	case key.Matches(msg, keys.Down):
+		vp.LineDown(1)
+	case key.Matches(msg, keys.PageUp):
+		vp.HalfPageUp()
+	case key.Matches(msg, keys.PageDown):
+		vp.HalfPageDown()
+	case key.Matches(msg, keys.Top):
+		vp.GotoTop()
+	case key.Matches(msg, keys.Bottom):
+		vp.GotoBottom()
+	default:
+		return false
+	}
+	return true
+}
+
+func (m Model) focusAccountPanel() (tea.Model, tea.Cmd) {
+	m.previewFocused = false
+	m.accountFocused = true
+	m.syncAccountViewport(true)
+	if !m.accountRefreshing && (!m.accountLoaded || m.accountUsage.Stale || len(m.accountUsage.Groups) == 0) {
+		return m.startRefreshAccountUsage()
+	}
+	return m, nil
+}
+
+func (m Model) startRefreshAccountUsage() (tea.Model, tea.Cmd) {
+	m.accountRefreshing = true
+	m.accountErr = ""
+	m.accountVersion++
+	m.syncAccountViewport(true)
+	return m, fetchAccountUsageCmd(m.cfg, true, m.now)
 }
 
 func (m Model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -419,6 +557,132 @@ func (m Model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.clampHelpOffset()
 	return m, nil
+}
+
+func (m Model) startDeleteConfirm(mode session.DeleteMode) (tea.Model, tea.Cmd) {
+	sel, ok := m.selectedSession()
+	if !ok {
+		return m, nil
+	}
+
+	plan, ok := session.CollectDeletePlan(m.sessions, sel.ID)
+	if !ok {
+		plan = session.DeletePlan{Target: sel}
+	}
+
+	parentTitle := ""
+	if sel.ParentID != "" {
+		if parent, hasParent := m.sessions[strings.ToLower(strings.TrimSpace(sel.ParentID))]; hasParent {
+			parentTitle = parent.Title
+		}
+	}
+
+	trashPath := ""
+	if mode == session.DeleteModeTrash {
+		if td, err := session.ResolveTrashDir(); err == nil {
+			trashPath = utils.ShortenHome(td)
+		}
+	}
+
+	m.showHelp = false
+	m.previewFocused = false
+	m.accountFocused = false
+	m.errMsg = ""
+	m.confirmDelete = &deleteConfirmState{
+		mode:           mode,
+		plan:           plan,
+		parentTitle:    parentTitle,
+		trashPath:      trashPath,
+		confirmFocused: mode == session.DeleteModeTrash,
+	}
+	return m, nil
+}
+
+func (m Model) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEsc:
+		m.confirmDelete = nil
+		return m, nil
+	case tea.KeyEnter:
+		if m.confirmDelete != nil && m.confirmDelete.confirmFocused {
+			m.executePendingDelete()
+		} else {
+			m.confirmDelete = nil
+		}
+		return m, nil
+	case tea.KeyTab, tea.KeyShiftTab, tea.KeyLeft, tea.KeyRight:
+		if m.confirmDelete != nil {
+			m.confirmDelete.confirmFocused = !m.confirmDelete.confirmFocused
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "y", "Y":
+		m.executePendingDelete()
+		return m, nil
+	case "n", "N", "q":
+		m.confirmDelete = nil
+		return m, nil
+	case "h", "l":
+		if m.confirmDelete != nil {
+			m.confirmDelete.confirmFocused = !m.confirmDelete.confirmFocused
+		}
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m *Model) executePendingDelete() {
+	pending := m.confirmDelete
+	m.confirmDelete = nil
+	if pending == nil {
+		return
+	}
+
+	res, err := session.DeleteSession(m.cfg, m.sessions, pending.plan.Target.ID, pending.mode)
+	if err != nil {
+		m.errMsg = err.Error()
+		return
+	}
+	m.errMsg = ""
+
+	deletedSet := make(map[string]bool, len(res.DeletedIDs))
+	for _, id := range res.DeletedIDs {
+		deletedSet[id] = true
+		delete(m.sessions, id)
+		delete(m.artifactCache, id)
+		delete(m.expanded, id)
+	}
+
+	if parentID := strings.ToLower(strings.TrimSpace(pending.plan.Target.ParentID)); parentID != "" {
+		if parent, ok := m.sessions[parentID]; ok && len(parent.SubSessions) > 0 {
+			filtered := make([]session.Session, 0, len(parent.SubSessions))
+			for _, sub := range parent.SubSessions {
+				if !deletedSet[strings.ToLower(strings.TrimSpace(sub.ID))] {
+					filtered = append(filtered, sub)
+				}
+			}
+			parent.SubSessions = filtered
+			m.sessions[parentID] = parent
+			if len(filtered) == 0 {
+				delete(m.expanded, parentID)
+			}
+		}
+	}
+
+	if m.userState.Delete(res.DeletedIDs...) {
+		if err := session.SaveUserState(m.cfg.StateFile, m.userState); err != nil {
+			m.errMsg = err.Error()
+		}
+	}
+
+	m.rebuildSearchIndex()
+	m.refreshRows(true)
+	m.syncPreviewViewport(true)
 }
 
 func (m *Model) clampHelpOffset() {
@@ -463,6 +727,7 @@ func (m Model) startRename() (tea.Model, tea.Cmd) {
 	m.renaming = true
 	m.searching = false
 	m.previewFocused = false
+	m.accountFocused = false
 	m.showHelp = false
 	m.errMsg = ""
 	m.renameTargetID = sel.ID
@@ -735,6 +1000,35 @@ func (m *Model) refreshTheme() {
 	m.renameInput.PromptStyle = theme.SearchPrompt
 	m.renameInput.PlaceholderStyle = theme.HeaderHint
 	m.syncPreviewViewport(true)
+	m.syncAccountViewport(true)
+}
+
+func (m *Model) syncAccountViewport(force bool) {
+	lay := m.layoutDimensions()
+	bodyH := m.listHeight(lay.innerH)
+	accountW := lay.accountInnerW
+
+	m.account.Width = accountW
+	m.account.Height = bodyH
+
+	if !force && m.accountWidth == accountW && m.accountVersion > 0 {
+		return
+	}
+
+	content := components.FormatAccountUsage(
+		m.accountUsage,
+		!m.accountLoaded && m.accountRefreshing,
+		m.accountRefreshing,
+		m.accountErr,
+		accountW,
+		m.now(),
+		m.theme,
+	)
+	m.account.SetContent(content)
+	if m.accountVersion == 0 {
+		m.account.GotoTop()
+	}
+	m.accountWidth = accountW
 }
 
 func (m *Model) syncPreviewViewport(force bool) {
@@ -797,22 +1091,53 @@ func (m *Model) loadCachedArtifacts(s session.Session) session.SessionArtifacts 
 // View renders the centered rectangular TUI modal(s) and any active floating overlay.
 func (m Model) View() string {
 	lay := m.layoutDimensions()
+	gap := strings.Repeat(" ", paneGapCols)
 
 	var modal string
-	if lay.twoPane {
-		left := m.renderListBox(lay)
-		right := m.renderPreviewBox(lay)
-		gap := strings.Repeat(" ", paneGapCols)
-		modal = lipgloss.JoinHorizontal(lipgloss.Top, left, gap, right)
-	} else if m.previewFocused {
+	switch {
+	case lay.threePane:
+		modal = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.renderPreviewBox(lay), gap,
+			m.renderListBox(lay), gap,
+			m.renderAccountBox(lay),
+		)
+	case lay.twoPane && m.accountFocused:
+		modal = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.renderListBox(lay), gap,
+			m.renderAccountBox(lay),
+		)
+	case lay.twoPane:
+		modal = lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			m.renderPreviewBox(lay), gap,
+			m.renderListBox(lay),
+		)
+	case m.accountFocused:
+		modal = m.renderAccountBox(lay)
+	case m.previewFocused:
 		modal = m.renderPreviewBox(lay)
-	} else {
+	default:
 		modal = m.renderListBox(lay)
 	}
 
 	base := modal
 	if m.width > 0 && m.height > 0 {
 		base = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
+	if m.confirmDelete != nil {
+		dialog := components.RenderConfirmDialog(components.ConfirmDialog{
+			Permanent:      m.confirmDelete.mode == session.DeleteModePermanent,
+			Title:          m.confirmDelete.plan.Target.Title,
+			SessionID:      m.confirmDelete.plan.Target.ID,
+			ParentTitle:    m.confirmDelete.parentTitle,
+			SubCount:       len(m.confirmDelete.plan.Children),
+			TrashPath:      m.confirmDelete.trashPath,
+			ConfirmFocused: m.confirmDelete.confirmFocused,
+		}, m.width, m.height, m.theme)
+		return components.OverlayCenter(base, dialog, m.width, m.height)
 	}
 
 	if !m.showHelp {
@@ -864,7 +1189,7 @@ func (m Model) renderListBox(lay layoutSpec) string {
 	content := strings.Join(lines, "\n")
 
 	borderStyle := m.theme.ModalBorder
-	if !m.showHelp && (m.searching || m.renaming || !m.previewFocused) {
+	if !m.showHelp && m.confirmDelete == nil && (m.searching || m.renaming || (!m.previewFocused && !m.accountFocused)) {
 		borderStyle = m.theme.ModalBorderActive
 	}
 
@@ -877,30 +1202,69 @@ func (m Model) renderListBox(lay layoutSpec) string {
 }
 
 func (m Model) renderPreviewBox(lay layoutSpec) string {
-	innerW := lay.previewInnerW
+	title := "Preview"
+	if m.previewFocused {
+		title = "Preview [scroll]"
+	}
+	focused := !m.showHelp && m.confirmDelete == nil && m.previewFocused && !m.searching && !m.renaming
+	return m.renderViewportBox(
+		title,
+		focused,
+		m.previewFooterView(lay.previewInnerW),
+		lay.previewBoxW,
+		lay.previewInnerW,
+		lay,
+		m.preview,
+		m.loading,
+	)
+}
+
+func (m Model) renderAccountBox(lay layoutSpec) string {
+	title := "Account"
+	if tier := strings.TrimSpace(m.accountUsage.PlanTier); tier != "" {
+		title = "Account · " + tier
+	}
+	if m.accountFocused {
+		title += " [scroll]"
+	} else if m.accountRefreshing {
+		title += " [sync]"
+	}
+	focused := !m.showHelp && m.confirmDelete == nil && m.accountFocused && !m.searching && !m.renaming
+	return m.renderViewportBox(
+		title,
+		focused,
+		m.accountFooterView(lay.accountInnerW),
+		lay.accountBoxW,
+		lay.accountInnerW,
+		lay,
+		m.account,
+		!m.accountLoaded && m.accountRefreshing,
+	)
+}
+
+func (m Model) renderViewportBox(title string, focused bool, footer string, boxW, innerW int, lay layoutSpec, vp viewport.Model, hideEmptyScroll bool) string {
 	innerH := lay.innerH
 
 	lines := make([]string, 0, innerH)
-	lines = append(lines, m.previewHeaderView(innerW))
+	lines = append(lines, m.viewportHeaderView(title, focused, innerW, vp, hideEmptyScroll))
 	lines = append(lines, m.theme.Divider.Render(strings.Repeat("─", innerW)))
 
-	vp := m.preview
 	vp.Width = innerW
 	vp.Height = m.listHeight(innerH)
 	lines = append(lines, vp.View())
-	lines = append(lines, m.previewFooterView(innerW))
+	lines = append(lines, footer)
 
 	content := strings.Join(lines, "\n")
 
 	borderStyle := m.theme.ModalBorder
-	if !m.showHelp && m.previewFocused && !m.searching && !m.renaming {
+	if focused {
 		borderStyle = m.theme.ModalBorderActive
 	}
 
 	return borderStyle.
 		Width(innerW + 4).
 		Height(innerH + 2).
-		MaxWidth(lay.previewBoxW).
+		MaxWidth(boxW).
 		MaxHeight(lay.boxH).
 		Render(content)
 }
@@ -1001,17 +1365,23 @@ func (m Model) headerView(innerW int) string {
 
 func (m Model) previewHeaderView(innerW int) string {
 	title := "Preview"
-	titleStyle := m.theme.HeaderHint
 	if m.previewFocused {
 		title = "Preview [scroll]"
+	}
+	return m.viewportHeaderView(title, m.previewFocused, innerW, m.preview, m.loading)
+}
+
+func (m Model) viewportHeaderView(title string, focused bool, innerW int, vp viewport.Model, hideEmptyScroll bool) string {
+	titleStyle := m.theme.HeaderHint
+	if focused {
 		titleStyle = m.theme.SearchPrompt
 	}
 
 	pctText := ""
-	if m.preview.TotalLineCount() > m.preview.Height && m.preview.Height > 0 {
-		pct := int(math.Round(m.preview.ScrollPercent() * 100))
+	if vp.TotalLineCount() > vp.Height && vp.Height > 0 {
+		pct := int(math.Round(vp.ScrollPercent() * 100))
 		pctText = fmt.Sprintf("%d%%", pct)
-	} else if m.preview.TotalLineCount() > 0 && !m.loading {
+	} else if vp.TotalLineCount() > 0 && !hideEmptyScroll {
 		pctText = "all"
 	}
 
@@ -1047,7 +1417,7 @@ func (m Model) footerView(innerW int) string {
 	case m.searchInput.Value() != "":
 		hint = "↑↓ select · Enter open · Esc clear · ? keys · q quit"
 	default:
-		hint = "↑↓ select · / search · Enter open · ? keys · q quit"
+		hint = "↑↓ select · / search · u account · ? keys"
 	}
 	return m.theme.Footer.Render(components.TruncateWidth(hint, innerW))
 }
@@ -1055,9 +1425,19 @@ func (m Model) footerView(innerW int) string {
 func (m Model) previewFooterView(innerW int) string {
 	var hint string
 	if m.previewFocused {
-		hint = "↑↓/Pg scroll · Tab back · ? keys · q quit"
+		hint = "↑↓/Pg scroll · u account · Tab back · ? keys"
 	} else {
-		hint = "Tab focus preview · ? keys"
+		hint = "Tab focus preview · u account · ? keys"
+	}
+	return m.theme.Footer.Render(components.TruncateWidth(hint, innerW))
+}
+
+func (m Model) accountFooterView(innerW int) string {
+	var hint string
+	if m.accountFocused {
+		hint = "↑↓/Pg scroll · U refresh · u/Esc back · ? keys"
+	} else {
+		hint = "u focus account · U refresh · ? keys"
 	}
 	return m.theme.Footer.Render(components.TruncateWidth(hint, innerW))
 }
@@ -1070,10 +1450,14 @@ func whichKeyEntries() []components.WhichKeyEntry {
 		{Desc: "Search sessions", Key: "/"},
 		{Desc: "Expand / collapse subsessions", Key: "l / h"},
 		{Desc: "Focus preview / back to list", Key: "Tab"},
+		{Desc: "Toggle / focus account usage", Key: "u"},
+		{Desc: "Refresh account quota limits", Key: "U"},
 		{Desc: "Rename selected session", Key: "r"},
 		{Desc: "Pin / unpin session", Key: "p"},
 		{Desc: "Archive / unarchive session", Key: "a"},
 		{Desc: "Show / hide archived sessions", Key: "A"},
+		{Desc: "Move session to trash", Key: "d"},
+		{Desc: "Delete session permanently", Key: "D"},
 		{Desc: "Resume selected session", Key: "Enter"},
 		{Desc: "Clear search / close overlay", Key: "Esc"},
 		{Desc: "Toggle keybindings menu", Key: "?"},
@@ -1104,12 +1488,51 @@ func (m Model) layoutDimensions() layoutSpec {
 		innerW := max(10, boxW-6)
 		return layoutSpec{
 			twoPane:       false,
+			threePane:     false,
 			boxH:          boxH,
 			innerH:        innerH,
 			listBoxW:      boxW,
 			listInnerW:    innerW,
 			previewBoxW:   boxW,
 			previewInnerW: innerW,
+			accountBoxW:   boxW,
+			accountInnerW: innerW,
+		}
+	}
+
+	if termW >= threePaneMinWidth {
+		totalMinW := min(max(36, termW-2), 128)
+		totalMaxW := min(max(36, termW-2), 212)
+		totalW := clampInt(termW*94/100, totalMinW, totalMaxW)
+
+		availW := max(30, totalW-2*paneGapCols)
+		listBoxW := availW * 34 / 100
+		if listBoxW < 40 {
+			listBoxW = 40
+		}
+		previewBoxW := availW * 31 / 100
+		if previewBoxW < 34 {
+			previewBoxW = 34
+		}
+		accountBoxW := availW - listBoxW - previewBoxW
+		if accountBoxW < 34 {
+			accountBoxW = 34
+			rem := max(20, availW-accountBoxW)
+			listBoxW = rem * 52 / 100
+			previewBoxW = rem - listBoxW
+		}
+
+		return layoutSpec{
+			twoPane:       true,
+			threePane:     true,
+			boxH:          boxH,
+			innerH:        innerH,
+			listBoxW:      listBoxW,
+			listInnerW:    max(10, listBoxW-6),
+			previewBoxW:   previewBoxW,
+			previewInnerW: max(10, previewBoxW-6),
+			accountBoxW:   accountBoxW,
+			accountInnerW: max(10, accountBoxW-6),
 		}
 	}
 
@@ -1130,12 +1553,15 @@ func (m Model) layoutDimensions() layoutSpec {
 
 	return layoutSpec{
 		twoPane:       true,
+		threePane:     false,
 		boxH:          boxH,
 		innerH:        innerH,
 		listBoxW:      listBoxW,
 		listInnerW:    max(10, listBoxW-6),
 		previewBoxW:   previewBoxW,
 		previewInnerW: max(10, previewBoxW-6),
+		accountBoxW:   previewBoxW,
+		accountInnerW: max(10, previewBoxW-6),
 	}
 }
 
@@ -1171,5 +1597,32 @@ func loadSessionsCmd(cfg config.Config) tea.Cmd {
 			userState: st,
 			stateErr:  stateErr,
 		}
+	}
+}
+
+func fetchAccountUsageCmd(cfg config.Config, force bool, nowFn func() time.Time) tea.Cmd {
+	return func() tea.Msg {
+		now := time.Now()
+		if nowFn != nil {
+			now = nowFn()
+		}
+		if !force {
+			if cached, ok, needsRefresh := session.LoadCachedAccountUsage(cfg, now); ok && !needsRefresh {
+				return usageLoadedMsg{usage: cached, found: true}
+			}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), usageRefreshTimeout)
+		defer cancel()
+
+		live, err := session.FetchLiveAccountUsage(ctx, cfg, now)
+		if err == nil {
+			return usageLoadedMsg{usage: live, found: true}
+		}
+
+		if cached, ok, _ := session.LoadCachedAccountUsage(cfg, now); ok {
+			return usageLoadedMsg{usage: cached, found: true, err: err}
+		}
+		return usageLoadedMsg{err: err}
 	}
 }

@@ -2,7 +2,7 @@ BINARY := agys
 CMD := ./cmd/agys
 BIN_DIR := ./bin
 
-.PHONY: build run test fmt vet tidy install clean
+.PHONY: build run test fmt vet tidy install install-plugin clean
 
 build:
 	@mkdir -p $(BIN_DIR)
@@ -25,6 +25,10 @@ tidy:
 
 install: build
 	./install.sh --local
+
+install-plugin:
+	mkdir -p $(HOME)/.config/omarchy/plugins/nox.agys
+	cp -R ./plugin/nox.agys/. $(HOME)/.config/omarchy/plugins/nox.agys/
 
 clean:
 	rm -rf $(BIN_DIR)

@@ -103,6 +103,31 @@ func saveIndexCache(path string, idx cachedIndex) error {
 	return os.Rename(tmpPath, path)
 }
 
+func removeSessionsFromCache(cachePath, dataRoot string, ids []string) error {
+	if strings.TrimSpace(cachePath) == "" || len(ids) == 0 {
+		return nil
+	}
+	idx, ok := loadIndexCache(cachePath, dataRoot)
+	if !ok || len(idx.Sessions) == 0 {
+		return nil
+	}
+	changed := false
+	for _, id := range ids {
+		key := strings.ToLower(strings.TrimSpace(id))
+		if key == "" {
+			continue
+		}
+		if _, exists := idx.Sessions[key]; exists {
+			delete(idx.Sessions, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return saveIndexCache(cachePath, idx)
+}
+
 func computeSessionFingerprint(sessionDir, annPath string) uint64 {
 	h := fnv.New64a()
 

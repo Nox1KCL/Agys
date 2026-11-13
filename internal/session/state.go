@@ -158,6 +158,25 @@ func (s *UserState) SetTitle(id, title string) {
 	s.Sessions[key] = ov
 }
 
+// Delete removes user state overrides for the specified session IDs and reports whether any existed.
+func (s *UserState) Delete(ids ...string) bool {
+	if len(s.Sessions) == 0 {
+		return false
+	}
+	changed := false
+	for _, id := range ids {
+		key := strings.ToLower(strings.TrimSpace(id))
+		if key == "" {
+			continue
+		}
+		if _, ok := s.Sessions[key]; ok {
+			delete(s.Sessions, key)
+			changed = true
+		}
+	}
+	return changed
+}
+
 // NormalizeTitle cleans a custom session title onto a single trimmed line.
 func NormalizeTitle(raw string) string {
 	replacer := strings.NewReplacer("\r", " ", "\n", " ", "\t", " ")

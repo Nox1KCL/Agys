@@ -2,6 +2,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/Nox1KCL/Agys/internal/config"
 	"github.com/Nox1KCL/Agys/internal/session"
@@ -24,6 +27,10 @@ type cliOptions struct {
 	searchQuery  string
 	showArchived bool
 	exitOnResume bool
+	pluginState  bool
+	refreshUsage bool
+	action       string
+	targetID     string
 }
 
 func main() {
@@ -45,6 +52,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 	cfg, err := config.DefaultWithOverrides(opts.dataDir, opts.stateFile)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	if opts.pluginState {
+		return runPluginState(cfg, opts.refreshUsage, stdout)
+	}
+	if opts.action != "" {
+		return runPluginAction(cfg, opts.action, opts.targetID, stdout)
 	}
 
 	model := tui.NewWithOptions(cfg, tui.Options{
@@ -85,6 +99,10 @@ func parseCLI(args []string, stdout, stderr io.Writer) (cliOptions, bool, error)
 	fs.BoolVar(&opts.showArchived, "a", false, "Show archived sessions on startup")
 	fs.BoolVar(&opts.exitOnResume, "exit-on-resume", false, "Exit agys and replace with agy on resume")
 	fs.BoolVar(&opts.exitOnResume, "e", false, "Exit agys and replace with agy on resume")
+	fs.BoolVar(&opts.pluginState, "plugin-state", false, "Output headless JSON snapshot for shell plugins")
+	fs.BoolVar(&opts.refreshUsage, "refresh-usage", false, "Force quota refresh during --plugin-state")
+	fs.StringVar(&opts.action, "action", "", "Run headless session action (pin, unpin, archive, unarchive, trash, restore, purge)")
+	fs.StringVar(&opts.targetID, "id", "", "Session UUID or trash entry name for --action")
 	fs.BoolVar(&showVersion, "version", false, "Show version information")
 	fs.BoolVar(&showVersion, "v", false, "Show version information")
 	fs.BoolVar(&showHelp, "help", false, "Show help message")
@@ -114,7 +132,44 @@ func parseCLI(args []string, stdout, stderr io.Writer) (cliOptions, bool, error)
 		return cliOptions{}, false, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 
+	opts.action = strings.TrimSpace(opts.action)
+	opts.targetID = strings.TrimSpace(opts.targetID)
+	if opts.pluginState && opts.action != "" {
+		return cliOptions{}, false, errors.New("--plugin-state and --action are mutually exclusive")
+	}
+	if opts.action != "" && opts.targetID == "" {
+		return cliOptions{}, false, errors.New("--action requires --id")
+	}
+	if opts.targetID != "" && opts.action == "" {
+		return cliOptions{}, false, errors.New("--id requires --action")
+	}
+
 	return opts, false, nil
+}
+
+func runPluginState(cfg config.Config, refreshUsage bool, stdout io.Writer) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	snapshot, err := session.BuildPluginSnapshot(ctx, cfg, refreshUsage, time.Now())
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, snapshot)
+}
+
+func runPluginAction(cfg config.Config, action, targetID string, stdout io.Writer) error {
+	res, err := session.RunPluginAction(cfg, action, targetID)
+	if err != nil {
+		return err
+	}
+	return writeJSON(stdout, res)
+}
+
+func writeJSON(w io.Writer, value any) error {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(value)
 }
 
 func versionString() string {
@@ -133,6 +188,10 @@ Flags:
   -s, --search <query>     Start with an initial search filter
   -a, --archived           Include archived sessions on startup
   -e, --exit-on-resume     Exit agys and hand terminal to agy on Enter
+      --plugin-state       Print headless JSON snapshot for shell widgets and exit
+      --refresh-usage      Force fresh quota fetch when used with --plugin-state
+      --action <name>      Run a headless session action (pin, unpin, archive, unarchive, trash, restore, purge)
+      --id <target>        Session UUID or trash entry name used with --action
   -v, --version            Print version information and exit
   -h, --help               Show this help message and exit
 

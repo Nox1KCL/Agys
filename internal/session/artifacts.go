@@ -52,6 +52,10 @@ func readMarkdownBounded(path string, countTasks bool) (excerpt string, done int
 	truncated := false
 
 	scanner := bufio.NewScanner(f)
+	if scanner.Err() != nil {
+		return "", 0, 0
+	}
+
 	scanner.Buffer(make([]byte, 4096), 256*1024)
 	for scanner.Scan() {
 		line := scanner.Text()

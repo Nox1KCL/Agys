@@ -8,13 +8,14 @@ A terminal TUI for browsing, searching, organizing, and resuming **Google Antigr
 - **Incremental index cache**: stores parsed session and Knowledge Item metadata in `~/.cache/agys/index.gob` (or `$XDG_CACHE_HOME/agys/index.gob`) invalidated via file-stat fingerprints for fast startups without re-reading unchanged logs.
 - **Live search (`/`)** across session titles, working directories, first and last user prompts, Knowledge Items, and subsessions backed by a pre-normalized in-memory search index.
 - **Omarchy-aligned styling**: reads your active Omarchy palette (`~/.local/state/omarchy/current/theme/colors.toml` or `~/.config/omarchy/current/theme/colors.toml`) with live reload on focus, preserves transparent terminal backgrounds, and falls back to ANSI 16 terminal colors elsewhere.
-- **Right-hand preview pane**: displays metadata (pin/archive flags, relative timestamp, last visited directory, UUID, subsessions), first and last user prompts, Knowledge Items, and artifacts (`task.md` with checklist progress, `implementation_plan.md`, `walkthrough.md`). Switches via `Tab` on narrow terminals (`< 96` columns).
-- **Pin, archive & custom rename**:
+- **Multi-pane preview & account usage layout**: wide terminals (`>= 138` columns) place **Preview** on the left, **Sessions** in the center, and **Account** **Quota Limits** on the right (`Preview | Sessions | Account`). Preview displays metadata (pin/archive flags, relative timestamp, last visited directory, UUID, subsessions), first and last user prompts, Knowledge Items, and artifacts (`task.md` with checklist progress, `implementation_plan.md`, `walkthrough.md`). Medium terminals show Preview left and Sessions right (`Tab` focuses preview), while `u` always opens/focuses the Account panel at any terminal width and `U` refreshes live quotas via `agy -p /usage --output-format json`.
+- **Pin, archive, rename & delete**:
   - `p` toggles pinning (`★`), keeping pinned sessions at the top of the list.
   - `a` archives or restores a session (archived sessions are hidden by default).
   - `A` toggles visibility of archived sessions.
   - `r` renames a session (submit empty to reset back to the auto-detected title).
-  - State persists in `~/.config/agys/state.json` (or `$XDG_CONFIG_HOME/agys/state.json`) layered over `annotations/*.pbtxt` without modifying Antigravity CLI files.
+  - `d` moves a session to Trash (`~/.local/share/Trash`) after a confirmation dialog; `D` permanently deletes it after a danger confirmation dialog.
+  - Pin, archive, and rename state persists in `~/.config/agys/state.json` (or `$XDG_CONFIG_HOME/agys/state.json`) layered over `annotations/*.pbtxt` without modifying Antigravity CLI files.
 - **Minimal footer & `?` which-key overlay**: shows only essential bindings in the bottom bar while pressing `?` opens a floating LazyVim/Yazi-style keybindings menu on top.
 - **Subsession tree navigation** (`l`/`h` or `→`/`←`) and instant session resume via `agy --conversation=<UUID>` (auto-resolving `agy` and launching inside the session's `Last visited` directory when present).
 
@@ -80,10 +81,14 @@ Press `?` anywhere outside text input to open the floating keybindings overlay.
 | `/` | Enter live search mode |
 | `l` / `→`, `h` / `←` | Expand / collapse subsessions |
 | `Tab` | Focus preview pane / return to list |
+| `u` | Toggle / focus Account Quota Limits pane |
+| `U` | Refresh account quota limits live (`agy /usage`) |
 | `r` | Rename selected session (`state.json` override) |
 | `p` | Pin / unpin session (`★`) |
 | `a` | Archive / restore session |
 | `A` | Show / hide archived sessions |
+| `d` | Move selected session to Trash (with confirmation) |
+| `D` | Permanently delete selected session (with confirmation) |
 | `Enter` | Resume selected session (`agy --conversation=<UUID>`) |
 | `Esc` | Clear search / exit preview focus / close overlay |
 | `?` | Toggle floating which-key menu |
@@ -106,9 +111,9 @@ Agys/
 │       └── main.go          # CLI entrypoint
 ├── internal/
 │   ├── config/              # Paths for ~/.gemini/antigravity-cli, state.json, and ~/.cache/agys/index.gob
-│   ├── session/             # Scanners, incremental gob cache, state.json, and in-memory search index
-│   ├── tui/                 # Root dual-pane Bubble Tea model and key handling
-│   │   ├── components/      # Session list, preview formatter, and floating which-key overlay
+│   ├── session/             # Scanners, incremental gob cache, usage parser, state.json, and search index
+│   ├── tui/                 # Root multi-pane Bubble Tea model and key handling
+│   │   ├── components/      # Session list, preview & account formatters, dialogs, and which-key overlay
 │   │   └── styles/          # ANSI terminal palette Lip Gloss styles
 │   └── utils/               # Date, home path, UUID, and truncation helpers
 ├── install.sh               # Linux installer (GitHub Releases / local binary + PATH)
