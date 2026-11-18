@@ -24,41 +24,61 @@ A terminal TUI for browsing, searching, organizing, and resuming **Google Antigr
 
 ## Installation (Linux)
 
+### Direct Binary (GitHub Releases — no installer script)
+
+Download a standalone Linux binary (`agys-linux-amd64` or `agys-linux-arm64`) or `.tar.gz` archive from [GitHub Releases](https://github.com/Nox1KCL/Agys/releases/latest), make it executable, and move it into a directory on your `PATH`:
+
+```bash
+chmod +x agys-linux-amd64
+mkdir -p ~/.local/bin
+mv agys-linux-amd64 ~/.local/bin/agys
+```
+
+### Using `go install`
+
+Requires Go (`go 1.27+`). Since the module in `go.mod` is `github.com/Nox1KCL/Agys` and the CLI entrypoint lives in `./cmd/agys`, install via:
+
+```bash
+go install github.com/Nox1KCL/Agys/cmd/agys@latest
+```
+
+Make sure `$(go env GOPATH)/bin` (usually `~/go/bin`) is in your `PATH`.
+
+### Build from Source
+
+```bash
+git clone https://github.com/Nox1KCL/Agys.git
+cd Agys
+make build          # builds ./bin/agys
+# or install to ~/.local/bin/agys without GitHub downloads:
+make install
+```
+
 ### Using `install.sh`
 
-Supports **Linux only** (`amd64` / `arm64`). The installer:
-1. Uses `curl` (when available) to download the latest GitHub release (`Nox1KCL/Agys`).
-2. Falls back to checking a local binary (`./bin/agys`, `./agys`) or building from source with `go build`.
-3. Installs to `~/.local/bin/agys` and idempotently adds `~/.local/bin` to `PATH` (`fish`, `zsh`, `bash`, or `~/.profile`).
+Supports **Linux only** (`amd64` / `arm64`).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Nox1KCL/Agys/main/install.sh | bash
 ```
 
-Or install locally from a cloned repository:
+Or run from a cloned repository (`./install.sh` or `./install.sh --local`).
 
-```bash
-./install.sh
-# or build locally and skip GitHub Releases:
-make install
-```
+**What `install.sh` does:**
+- **No `sudo` needed**: everything runs as your user and touches only home-directory paths (`$AGYS_INSTALL_DIR`, default `~/.local/bin`).
+- **Binary resolution**: verifies `Linux` + `amd64`/`arm64`, downloads the matching asset from GitHub Releases via `curl` (unless `--local` is passed), and falls back to `./bin/agys`, `./agys`, or `go build ./cmd/agys` when run from a local checkout.
+- **Files written**: installs the executable (`chmod 755`) to `~/.local/bin/agys` and, if that directory is not yet referenced, idempotently appends a `PATH` line to `~/.config/fish/config.fish`, `~/.zshrc`, `~/.bashrc`, or `~/.profile`.
 
 Optional environment variables for `install.sh`:
 - `AGYS_REPO` — GitHub repository slug (default: `Nox1KCL/Agys`)
 - `AGYS_VERSION` — release tag or `latest`
 - `AGYS_INSTALL_DIR` — target directory (default: `~/.local/bin`)
 
-Expected GitHub Release asset names:
-- `agys_linux_<arch>.tar.gz` (containing the `agys` executable), or
-- `agys-linux-<arch>` / `agys_linux_<arch>` (`<arch>` = `amd64` or `arm64`).
-
-### Manual Build
-
-```bash
-git clone https://github.com/Nox1KCL/Agys.git
-cd Agys
-make build    # builds ./bin/agys
-```
+GitHub Release assets:
+- `agys-linux-amd64`, `agys-linux-arm64` — ready-to-run standalone executables
+- `agys_linux_amd64.tar.gz`, `agys_linux_arm64.tar.gz` — compressed archives containing `agys`
+- `nox.agys-plugin.tar.gz` — Omarchy `nox.agys` bar widget plugin
+- `checksums.txt` — SHA-256 checksums for all release files
 
 ## CLI Flags
 

@@ -21,7 +21,7 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 ./...
 
-      - name: Build Linux release archives
+      - name: Build Linux release binaries and archives
         env:
           VERSION: ${{ github.ref_name }}
         run: |
@@ -31,17 +31,21 @@ jobs:
             mkdir -p "$stage"
             GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
               go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "${stage}/agys" ./cmd/agys
+            cp "${stage}/agys" "dist/agys-linux-${arch}"
+            chmod +x "dist/agys-linux-${arch}"
             tar -C "$stage" -czf "dist/agys_linux_${arch}.tar.gz" agys
             rm -rf "$stage"
           done
           tar -C plugin -czf "dist/nox.agys-plugin.tar.gz" nox.agys
-          (cd dist && sha256sum agys_linux_amd64.tar.gz agys_linux_arm64.tar.gz nox.agys-plugin.tar.gz > checksums.txt)
+          (cd dist && sha256sum agys-linux-amd64 agys-linux-arm64 agys_linux_amd64.tar.gz agys_linux_arm64.tar.gz nox.agys-plugin.tar.gz > checksums.txt)
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
+            dist/agys-linux-amd64
+            dist/agys-linux-arm64
             dist/agys_linux_amd64.tar.gz
             dist/agys_linux_arm64.tar.gz
             dist/nox.agys-plugin.tar.gz
