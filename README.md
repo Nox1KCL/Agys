@@ -1,5 +1,8 @@
 # Agys
 
+<img width="1805" height="909" alt="7405_redacted" src="https://github.com/user-attachments/assets/64327676-7a35-4b78-8b6b-9510b0a25963" />
+
+
 A terminal TUI for browsing, searching, organizing, and resuming **Google Antigravity CLI** sessions.
 
 ## Features
