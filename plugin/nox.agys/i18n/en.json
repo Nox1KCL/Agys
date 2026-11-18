@@ -45,5 +45,6 @@
   "bar.tooltip.active": "Agys · %1 (%2 active) · Left click toggle · Middle refresh · Right TUI",
   "bar.tooltip.lowQuota": "Agys · %1 · Low quota (%2% left)",
   "alert.lowQuota.title": "Antigravity Quota Low",
-  "alert.lowQuota.body": "%1 (%2) has %3% remaining"
+  "alert.lowQuota.body": "%1 (%2) has %3% remaining",
+  "error.missingBinary": "agys CLI not found in PATH or ~/.local/bin. Install it from github.com/Nox1KCL/Agys"
 }

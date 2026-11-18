@@ -55,7 +55,7 @@ Item {
   function agysArgv(extraArgs) {
     return [
       "sh", "-c",
-      "exec \"$(command -v agys || printf '%s' \"$HOME/.local/bin/agys\")\" \"$@\"",
+      "bin=\"$(command -v agys || printf '%s' \"$HOME/.local/bin/agys\")\"; [ -x \"$bin\" ] || exit 127; exec \"$bin\" \"$@\"",
       "agys"
     ].concat(extraArgs || [])
   }
@@ -278,14 +278,21 @@ Item {
     return t("quota.resetsIn", "Resets in %1").arg(formatDurationShort(diffSec)) + (clockStr ? " · " + clockStr : "")
   }
 
+  function formatExitError(exitCode, errOutput, fallbackLabel) {
+    if (exitCode === 127) {
+      return root.t("error.missingBinary", "agys CLI not found in PATH or ~/.local/bin. Install it from github.com/Nox1KCL/Agys")
+    }
+    var errMsg = String(errOutput || "").trim()
+    return errMsg || (fallbackLabel + " (" + exitCode + ")")
+  }
+
   Process {
     id: stateProc
     stdout: StdioCollector { id: stateOut; waitForEnd: true }
     stderr: StdioCollector { id: stateErr; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        var errMsg = String(stateErr.text || "").trim()
-        root.errorText = errMsg || ("agys exited with code " + exitCode)
+        root.errorText = root.formatExitError(exitCode, stateErr.text, "agys exited with code")
       } else {
         var raw = String(stateOut.text || "").trim()
         if (raw) {
@@ -311,8 +318,7 @@ Item {
     stderr: StdioCollector { id: actionErr; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        var errMsg = String(actionErr.text || "").trim()
-        root.errorText = errMsg || ("action failed (" + exitCode + ")")
+        root.errorText = root.formatExitError(exitCode, actionErr.text, "action failed")
       }
       root.refresh(false)
     }

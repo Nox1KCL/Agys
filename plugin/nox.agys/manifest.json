@@ -15,6 +15,7 @@
     "displayName": "Agys",
     "description": "Compact session viewer & launcher (pinned, recent, archive, trash) plus Quota Limits backed by Agys.",
     "category": "AI",
+    "defaultSection": "right",
     "allowMultiple": false,
     "defaults": {
       "refreshIntervalSec": 60,

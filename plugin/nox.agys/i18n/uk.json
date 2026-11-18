@@ -47,5 +47,6 @@
   "bar.tooltip.active": "Agys · %1 (%2 активних) · ЛКМ панель · СКМ оновити · ПКМ TUI",
   "bar.tooltip.lowQuota": "Agys · %1 · Низька квота (залишок %2%)",
   "alert.lowQuota.title": "Низький ліміт Antigravity",
-  "alert.lowQuota.body": "%1 (%2): залишилось %3%"
+  "alert.lowQuota.body": "%1 (%2): залишилось %3%",
+  "error.missingBinary": "Утиліту agys не знайдено в PATH або ~/.local/bin. Встановіть її з github.com/Nox1KCL/Agys"
 }
