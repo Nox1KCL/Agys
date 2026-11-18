@@ -270,10 +270,20 @@ func TestNewResumeCmd(t *testing.T) {
 		t.Fatal("expected error for invalid UUID")
 	}
 
+	pathBin := t.TempDir()
+	pathAgy := filepath.Join(pathBin, "agy")
+	if err := os.WriteFile(pathAgy, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake path agy: %v", err)
+	}
+	t.Setenv("PATH", pathBin)
+
 	validID := "083f7f21-26a2-4e44-b6ea-fa7fc1795a2f"
 	cmd, err := NewResumeCmd(validID)
 	if err != nil {
 		t.Fatalf("NewResumeCmd failed: %v", err)
+	}
+	if cmd.Path != pathAgy {
+		t.Fatalf("resolved PATH binary = %q, want %q", cmd.Path, pathAgy)
 	}
 	if len(cmd.Args) != 2 || cmd.Args[1] != "--conversation="+validID {
 		t.Fatalf("unexpected cmd args: %v", cmd.Args)
